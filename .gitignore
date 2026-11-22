@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+build/
+dist/
+installer/
+ffmpeg/
+assets/icon.ico
+*.spec
+.pytest_cache/
+shots/
