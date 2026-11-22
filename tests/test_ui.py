@@ -64,7 +64,7 @@ def test_empty_window(qapp, session, data_dir):
     assert w.doc is None and not w.tabs.isVisible()
     assert not w.a_save.isEnabled() and not w.a_cut.isEnabled() and not w.tb["normalize"].isEnabled()
     menus = [a.text() for a in w.menuBar().actions()]
-    assert menus == ["ArtCore Sound", "Файл", "Правка", "Вид", "Обработка", "Воспроизведение"]
+    assert menus == ["ArtCore Sound", "Файл", "Правка", "Вид", "Обработка", "Инструменты", "Воспроизведение"]
     assert "Справка" not in menus
     img = w.grab().toImage()
     assert img.width() > 1000
@@ -165,6 +165,7 @@ def test_processing_from_the_menu(qapp, session, data_dir, media_dir, monkeypatc
     d = w.doc
     from sound import dialogs
     monkeypatch.setattr(dialogs.ValueDialog, "exec", lambda self: True)
+    monkeypatch.setattr(dialogs.NormalizeDialog, "exec", lambda self: True)
     w.normalize_dialog()                              # the whole file to −0.1 dBFS
     assert pump(qapp, 20, lambda: w.job is None and len(d.history) == 2)
     assert abs(d.peak().max() - 10 ** (-0.1 / 20)) < 1e-4
@@ -322,7 +323,7 @@ def test_light_theme_and_english(qapp, session, data_dir, media_dir):
     try:
         w = _win(qapp, session)
         assert [a.text() for a in w.menuBar().actions()] == ["ArtCore Sound", "File", "Edit", "View", "Process",
-                                                              "Transport"]
+                                                              "Tools", "Transport"]
         _open(qapp, w, os.path.join(media_dir, "stereo16.wav"))
         w._set_theme("light")
         assert style.THEME == "light"
@@ -356,3 +357,163 @@ def test_version_in_three_places():
     assert f'#define AppVersion   "{VERSION}"' in iss
     vi = open(os.path.join(ROOT, "version_info.txt"), encoding="utf-8").read()
     assert f"filevers={VERSION_TUPLE}" in vi and f"'ProductVersion', '{VERSION}'" in vi
+
+
+# ── 0.2: the status bar, Tools → Statistics, the new processing ─────────
+def _stats_ready(w):
+    return "…" not in w.st_stats.text() and w.st_stats.text() != ""
+
+
+def test_status_bar_measures_in_the_background(qapp, session, data_dir, loud_dir):
+    from sound import analysis
+    w = _win(qapp, session)
+    _open(qapp, w, os.path.join(loud_dir, "pink.wav"))
+    d = w.doc
+    txt = w.st_stats.text()
+    assert "Пик" in txt and "dBFS" in txt and "…" in txt          # the peak at once, the rest is being measured
+    assert pump(qapp, 20, lambda: _stats_ready(w))
+    st = analysis.analyze(d, loudness=True, true_peak=False)
+    from sound.dialogs import fmt_db
+    assert f"{fmt_db(st.integrated)} LUFS" in w.st_stats.text() and "клиппинг 0" in w.st_stats.text()
+    whole = w.st_stats.text()
+    # a selection: the peak of it at once, the rest after a moment; the result is cached
+    _select(w, 44100 * 5, 44100 * 15)
+    assert "…" in w.st_stats.text()
+    assert pump(qapp, 20, lambda: _stats_ready(w)) and w.st_stats.text() != whole
+    sel_text = w.st_stats.text()
+    w.select_none()
+    assert w.st_stats.text() == whole                                 # from the cache, no waiting
+    _select(w, 44100 * 5, 44100 * 15)
+    assert w.st_stats.text() == sel_text
+    # moving the selection quickly measures only the last one
+    for i in range(10):
+        _select(w, 1000 * i, 44100 * 3 + 1000 * i)
+    assert pump(qapp, 20, lambda: _stats_ready(w))
+    assert w.stats_key(d, 9000, 44100 * 3 + 9000) in w.stats_cache
+    assert w.stats_key(d, 4000, 44100 * 3 + 4000) not in w.stats_cache
+    # an edit: measured again
+    w.silence()
+    assert "…" in w.st_stats.text()
+    assert pump(qapp, 20, lambda: _stats_ready(w))
+    w.close_doc(0) if not w.doc.dirty else (w.doc.mark_saved(), w.close_doc(0))
+    assert w.st_stats.text() == ""                                    # no file: nothing shown
+    _close(w)
+
+
+def test_status_bar_shows_clipping(qapp, session, data_dir, loud_dir):
+    w = _win(qapp, session)
+    _open(qapp, w, os.path.join(loud_dir, "clipped.wav"))
+    assert pump(qapp, 20, lambda: _stats_ready(w))
+    assert "клиппинг" in w.st_stats.text() and "клиппинг 0" not in w.st_stats.text()
+    _close(w)
+
+
+def test_statistics_dialog(qapp, session, data_dir, loud_dir):
+    w = _win(qapp, session)
+    assert [a.text() for a in w.menuBar().actions()][5] == "Инструменты"
+    _open(qapp, w, os.path.join(loud_dir, "dc_tone.wav"))
+    assert w.a_stats.isEnabled() and w.a_stats.shortcut().toString() == "Ctrl+I"
+    w.a_stats.trigger()
+    dlg = w.stats_dlg
+    assert dlg.isVisible()
+    assert pump(qapp, 30, lambda: dlg.prog is None and "LUFS" in dlg.loud["st_integrated"].text())
+    v = dlg.values()
+    assert "весь файл" in dlg.what.text()
+    assert [dlg.table.horizontalHeaderItem(i).text() for i in range(3)] == ["L", "R", "Все каналы"]
+    assert v[("st_dc", "L")] == "10.000" and v[("st_dc", "R")] == "−5.000"
+    assert v[("st_peak", "L")] == "−7.96" and v[("st_peak", "R")] == "−12.04"            # 0.1 + 0.3, −0.05 − 0.2
+    assert float(v[("st_tp", "R")].replace("−", "-")) >= -12.04
+    assert v[("st_clipped", "Все каналы")] == "0"
+    assert v["st_lra"].endswith("LU")
+    whole = v["st_integrated"]
+    # a selection and «Refresh»
+    _select(w, 0, 44100)
+    dlg.refresh_b.click()
+    assert pump(qapp, 30, lambda: dlg.prog is None and "выделение" in dlg.what.text())
+    assert "0:00:01.000" in dlg.what.text()
+    assert dlg.values()["st_integrated"].endswith("LUFS")
+    # the result went into the cache: the status bar uses it at once
+    assert w.stats_key(w.doc, 0, 44100) in w.stats_cache
+    # Cancel stops a long measuring
+    _select(w, 0, w.doc.frames - 1)
+    dlg.refresh()
+    assert dlg.cancel_b.isVisible() or dlg.prog is None
+    dlg.cancel_b.click()
+    assert pump(qapp, 10, lambda: dlg.prog is None and dlg.refresh_b.isEnabled())
+    dlg.close()
+    _close(w)
+    assert whole
+
+
+def test_normalize_lufs_from_the_menu(qapp, session, data_dir, loud_dir, monkeypatch):
+    from sound import analysis, dialogs
+    w = _win(qapp, session)
+    _open(qapp, w, os.path.join(loud_dir, "pink.wav"))
+    d = w.doc
+    monkeypatch.setattr(dialogs.NormalizeDialog, "exec", lambda self: True)
+    told = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: told.append(a[2]))
+    w.cfg["normalize"] = {"mode": "loudness", "target": -16.0, "ceiling": -1.0}
+    w.normalize_dialog()
+    assert pump(qapp, 30, lambda: w.job is None and len(d.history) == 2)
+    assert abs(analysis.analyze(d).integrated + 16.0) < 0.01 and not told
+    assert w.a_undo.text() == "Отменить: Нормализация до −16.0 LUFS"
+    # a custom target that the ceiling holds back: said in a message
+    w.cfg["normalize"] = {"mode": "loudness", "target": -5.0, "ceiling": -2.0}
+    w.normalize_dialog()
+    assert pump(qapp, 30, lambda: w.job is None and len(d.history) == 3)
+    assert told and "потолок" in told[0]
+    assert abs(analysis.to_db(analysis.analyze(d).true_peak) + 2.0) < 0.01
+    # the dialog itself: the presets, a custom target, the peak mode
+    dlg = dialogs.NormalizeDialog({"normalize": {"mode": "loudness", "target": -14.0}})
+    assert dlg.mode() == "loudness" and dlg.lufs_target() == -14.0 and not dlg.custom.isEnabled()
+    dlg.target.setCurrentIndex(dlg.target.count() - 1)
+    dlg.custom.setValue(-18.5)
+    assert dlg.custom.isEnabled() and dlg.settings()["target"] == -18.5
+    dlg.by_peak.setChecked(True)
+    assert not dlg.target.isEnabled() and dlg.peak.isEnabled() and dlg.mode() == "peak"
+    dlg.tp.setChecked(True)
+    assert dlg.peak.suffix() == " dBTP"
+    dlg.deleteLater()
+    _close(w)
+
+
+def test_dc_trim_silence_and_mono_from_the_menu(qapp, session, data_dir, loud_dir, monkeypatch):
+    from sound import analysis, dialogs
+    w = _win(qapp, session)
+    monkeypatch.setattr(dialogs.ValueDialog, "exec", lambda self: True)
+    _open(qapp, w, os.path.join(loud_dir, "dc_tone.wav"))
+    d = w.doc
+    names = [a.objectName() for a in w.proc_actions]
+    assert {"p_dc", "p_trim_silence", "p_to_mono", "p_to_stereo"} <= set(names)
+    assert w.a_to_mono.isEnabled() and not w.a_to_stereo.isEnabled()
+    w.remove_dc()
+    assert pump(qapp, 20, lambda: w.job is None and len(d.history) == 2)
+    assert all(abs(c.dc) < 1e-6 for c in analysis.analyze(d, loudness=False, true_peak=False).channels)
+    assert w.a_undo.text() == "Отменить: Убрать DC offset"
+    w.cfg["to_mono"] = "left"
+    w.to_mono_dialog()
+    assert pump(qapp, 20, lambda: w.job is None and d.channels == 1)
+    assert d.labels == ("M",) and w.meters.labels == ["M"]
+    assert not w.a_to_mono.isEnabled() and w.a_to_stereo.isEnabled()
+    w.to_stereo()
+    assert pump(qapp, 20, lambda: w.job is None and d.channels == 2)
+    w.a_undo.trigger()
+    w.a_undo.trigger()
+    assert d.channels == 2 and len(d.history) == 4 and d.pos == 1
+    # trim silence: a tone between silences, the whole file, no sound written
+    _open(qapp, w, os.path.join(loud_dir, "gap.wav"))
+    e = w.doc
+    srcs = e.sources()
+    w.cfg["trim_silence"] = {"threshold": -60.0, "margin": 10}
+    w.trim_silence_dialog()
+    assert w.job is None and len(e.history) == 2 and e.sources() == srcs
+    assert abs(e.frames - (2 * 44100 + 2 * 441)) <= 3
+    assert w.a_undo.text() == "Отменить: Обрезать тишину в начале и конце"
+    told = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: told.append(a[2]))
+    _select(w, 0, 400)
+    w.cfg["trim_silence"] = {"threshold": 0.0, "margin": 0}
+    w.trim_silence_dialog()                              # everything is quieter than 0 dBFS: said, nothing cut
+    assert told and len(e.history) == 2
+    _close(w)

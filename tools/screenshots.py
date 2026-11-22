@@ -1,5 +1,6 @@
 """Screenshots of the window (offscreen Qt) in the dark and the light theme: the empty window, a stereo file with a
-selection while it plays, the sample-level zoom, a 5.1 file. Test sound is made by ffmpeg.
+selection while it plays (the status bar measured), the sample-level zoom, a 5.1 file, Tools → Statistics of the
+5.1 file, the Normalize dialog. Test sound is made by ffmpeg.
 
 Usage: python tools/screenshots.py OUT_DIR [ru|en]"""
 import os
@@ -69,6 +70,9 @@ def main(out: str, lang: str = "ru") -> int:
         w._on_selection()
         w.play()
         pump(1.2)
+        t0 = time.time()
+        while "…" in w.st_stats.text() and time.time() - t0 < 20:
+            pump(0.1)
         w.grab().save(os.path.join(out, f"main_{theme}.png"))
         w.stop_play()
         w.wave.zoom_range(int(20.5 * 44100), int(20.53 * 44100))
@@ -83,6 +87,24 @@ def main(out: str, lang: str = "ru") -> int:
         pump(0.8)
         w.grab().save(os.path.join(out, f"surround_{theme}.png"))
         w.stop_play()
+        w.select_none()
+        w.statistics_dialog()
+        dlg = w.stats_dlg
+        t0 = time.time()
+        while dlg.prog is not None and time.time() - t0 < 30:
+            pump(0.1)
+        dlg.resize(720, 560)
+        pump(0.2)
+        dlg.grab().save(os.path.join(out, f"statistics_{theme}.png"))
+        dlg.close()
+        from sound.dialogs import NormalizeDialog
+        nd = NormalizeDialog({"normalize": {"mode": "loudness", "target": -14.0, "ceiling": -1.0}},
+                             "Сейчас пик −0.85 dBFS · −16.2 LUFS" if lang == "ru" else
+                             "The peak now is −0.85 dBFS · −16.2 LUFS", False, w)
+        nd.show()
+        pump(0.2)
+        nd.grab().save(os.path.join(out, f"normalize_{theme}.png"))
+        nd.close()
         for x in w.docs:
             x.mark_saved()
         w.close()
