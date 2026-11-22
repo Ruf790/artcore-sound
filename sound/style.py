@@ -57,6 +57,7 @@ def palette() -> dict:
     else:
         pal.update(MODERN, CARD_SEL=pal["ACCENT"], SECTION=pal["PANEL2"], SECTION2=pal["PANEL2"],
                    FIELD=pal["PANEL2"], BTN=pal["PANEL2"], BTN_HOT=pal["PANEL2"], MENU_SEL=pal["ACCENT"])
+    pal["FIELD_BG"] = pal.get("FIELD") or pal["PANEL2"]
     return pal
 ACCENT = ACCENT2 = BG = PANEL = PANEL2 = BORDER = TEXT = MUTED = STRONG = ICON = ""
 OK = ERR = WARN = RUN = RUN_TEXT = ""
@@ -64,16 +65,16 @@ OK = ERR = WARN = RUN = RUN_TEXT = ""
 
 WAVE_COLORS = {
     "dark": dict(W_BG="#141414", W_LANE="#181a1f", W_WAVE="#3ea6ff", W_WAVE_SEL="#ffffff", W_RMS="#86c8ff",
-                 W_SEL="rgba(62,166,255,70)", W_CENTER="#2c3440", W_GRID="#22272f", W_CURSOR="#ffffff",
+                 W_SEL="#2a3d58", W_CENTER="#2c3440", W_GRID="#22272f", W_CURSOR="#ffffff",
                  W_PLAY="#ffb02e", W_RULER="#1f1f22", W_RULER_TEXT="#a7adb7", W_MARKER="#37d67a",
-                 W_OVER_VIEW="rgba(255,255,255,40)", W_CLIP="#ff4d4f"),
+                 W_OVER_VIEW="rgba(255,255,255,40)", W_CLIP="#ff4d4f", W_METER="#101114"),
     "light": dict(W_BG="#ffffff", W_LANE="#ffffff", W_WAVE="#1662c4", W_WAVE_SEL="#0b2a55", W_RMS="#5f95dc",
-                  W_SEL="rgba(0,120,215,55)", W_CENTER="#b8c4d6", W_GRID="#e8edf4", W_CURSOR="#000000",
+                  W_SEL="#cfe3fa", W_CENTER="#b8c4d6", W_GRID="#e8edf4", W_CURSOR="#000000",
                   W_PLAY="#e8590c", W_RULER="#f0f0f0", W_RULER_TEXT="#4a4f58", W_MARKER="#1f9d55",
-                  W_OVER_VIEW="rgba(0,0,0,30)", W_CLIP="#e03131"),
+                  W_OVER_VIEW="rgba(0,0,0,30)", W_CLIP="#e03131", W_METER="#dfe4ec"),
 }
 W_BG = W_LANE = W_WAVE = W_WAVE_SEL = W_RMS = W_SEL = W_CENTER = W_GRID = W_CURSOR = W_PLAY = W_RULER = ""
-W_RULER_TEXT = W_MARKER = W_OVER_VIEW = W_CLIP = ""
+W_RULER_TEXT = W_MARKER = W_OVER_VIEW = W_CLIP = W_METER = ""
 
 
 def qcolor(spec: str) -> QColor:
@@ -143,7 +144,7 @@ def section_css() -> str:
 
 def stylesheet() -> str:
     pal = palette()
-    qss = QSS + (CLASSIC_QSS if LOOK == "classic" else "")
+    qss = QSS + (CLASSIC_QSS if LOOK == "classic" else "") + APP_QSS
     tag = f"{LOOK}_{THEME}"
     return (qss.format(**pal)
             .replace("%DOWN%", _icon_png("fa6s.chevron-down", pal["MUTED"], f"artcore_sound_down_{tag}.png", 9))
@@ -416,6 +417,21 @@ QScrollBar::handle:horizontal {{ background: {SCROLL}; border-radius: 0; min-wid
 QHeaderView::section {{ background: {SECTION}; color: {TEXT}; border-right: 1px solid {BORDER}; font-weight: 400; }}
 QLabel#format {{ border-radius: 2px; }}
 QLabel#badge, QLabel#badgeHdr {{ border-radius: 2px; }}
+"""
+
+
+# ArtCore Sound's own parts: the tool bar, the transport with its big counter, the side panel
+APP_QSS = """
+QWidget#toolbar {{ background: {PANEL}; border-bottom: 1px solid {BORDER}; }}
+QWidget#tbSep {{ background: transparent; border-left: 1px solid {BORDER}; margin: 3px 4px; }}
+QWidget#sidePanel {{ background: {PANEL}; border-left: 1px solid {BORDER}; }}
+QLabel#caption {{ color: {MUTED}; font-size: 8pt; }}
+QLabel#counter {{ font-family: "Consolas", "DejaVu Sans Mono", monospace; font-size: 20pt; font-weight: 600;
+                  color: {ACCENT}; background: {FIELD_BG}; border: 1px solid {BORDER}; padding: 2px 10px; }}
+QLineEdit#timeField {{ font-family: "Consolas", "DejaVu Sans Mono", monospace; }}
+QToolButton#play {{ border-radius: 17px; padding: 7px; }}
+QToolButton#play:disabled {{ background: {PANEL2}; }}
+QTabBar#plTabs {{ background: {BG}; }}
 """
 
 

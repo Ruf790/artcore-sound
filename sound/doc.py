@@ -162,25 +162,14 @@ class Document:
         if end <= start:
             return res
         if spp < RAW_SPP:
-            a = int(start)
-            n = int(math.ceil(end)) - a
-            x = self.read(a, n)[:, chs]
-            edges = np.floor(start + np.arange(ncols) * spp).astype(np.int64) - a
-            ok = edges < n
-            e = edges[ok]
-            if len(e):
-                e = np.maximum.accumulate(e)
-                uniq, first = np.unique(e, return_index=True)
-                mn = np.minimum.reduceat(x, uniq, axis=0)
-                mx = np.maximum.reduceat(x, uniq, axis=0)
-                cols = np.flatnonzero(ok)[first]
-                res[cols, :, 0] = mn
-                res[cols, :, 1] = mx
-                # columns that share a frame with the one before (spp near 1) copy it
-                filled = np.zeros(ncols, bool)
-                filled[cols] = True
-                for c in np.flatnonzero(ok & ~filled):
-                    res[c] = res[c - 1]
+            # from the frames themselves, a group of columns at a time (≤ 256 K frames read at once)
+            group = max(1, int(262144 // spp))
+            for c0 in range(0, ncols, group):
+                c1 = min(ncols, c0 + group)
+                s0 = start + c0 * spp
+                if s0 >= self.frames:
+                    break
+                self._raw_columns(res, c0, c1, s0, spp, chs)
             return res
         level = max(0, int(math.floor(math.log(spp / (BASE * FACTOR), FACTOR) + 1e-9)))
         mins = np.full((ncols, len(chs)), np.inf, np.float32)
@@ -211,6 +200,28 @@ class Document:
             if c:
                 res[c] = res[c - 1]
         return res
+
+    def _raw_columns(self, res: np.ndarray, c0: int, c1: int, s0: float, spp: float, chs: list) -> None:
+        a = int(s0)
+        end = min(float(self.frames), s0 + spp * (c1 - c0))
+        n = int(math.ceil(end)) - a
+        x = self.read(a, n)
+        if len(chs) != self.channels:
+            x = x[:, chs]
+        edges = np.floor(s0 + np.arange(c1 - c0) * spp).astype(np.int64) - a
+        ok = edges < n
+        e = edges[ok]
+        if not len(e):
+            return
+        e = np.maximum.accumulate(e)
+        uniq, first = np.unique(e, return_index=True)
+        cols = c0 + np.flatnonzero(ok)[first]
+        res[cols, :, 0] = np.minimum.reduceat(x, uniq, axis=0)
+        res[cols, :, 1] = np.maximum.reduceat(x, uniq, axis=0)
+        filled = np.zeros(c1 - c0, bool)
+        filled[cols - c0] = True
+        for c in np.flatnonzero(ok & ~filled):          # columns that share a frame with the one before (spp ≈ 1)
+            res[c0 + c] = res[c0 + c - 1]
 
     def peak(self, a: int = 0, b: int | None = None) -> np.ndarray:
         """The largest |sample| per channel in [a, b) — exact, from the peak levels."""
