@@ -30,6 +30,10 @@ DEFAULTS = {
     # saving
     "save_format":   "wav",
     "save_opts":     {},            # format → {"bits": "24", "bitrate": 320, …}
+    # effects (0.3)
+    "fx_last":       {},            # effect key → the values last applied
+    "fx_presets":    {},            # effect key → {name: values} (the user's own presets)
+    "fx_keep_tail":  True,          # delay / reverb: ring on past the selection
 }
 
 RECENT_MAX = 12
@@ -104,8 +108,10 @@ def load() -> dict:
     if not isinstance(cfg.get("recent"), list):
         cfg["recent"] = []
     cfg["recent"] = [p for p in cfg["recent"] if isinstance(p, str)][:RECENT_MAX]
-    if not isinstance(cfg.get("save_opts"), dict):
-        cfg["save_opts"] = {}
+    for k in ("save_opts", "fx_last", "fx_presets"):
+        if not isinstance(cfg.get(k), dict):
+            cfg[k] = {}
+    cfg["fx_keep_tail"] = bool(cfg.get("fx_keep_tail"))
     for k in ("loop", "follow", "return_cursor", "check_updates"):
         cfg[k] = bool(cfg.get(k))
     for k in ("device", "temp_dir", "last_dir", "save_dir", "save_format"):

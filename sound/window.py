@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self._stats_timer.setInterval(STATS_DELAY)
         self._stats_timer.timeout.connect(self._stats_start)
         self.stats_dlg = None
+        self.fx_dlg = None                      # the effect window while it is open
         self.job = None                         # (label, Progress) while a long job runs
         self._job_doc = None
         self._open_queue: list = []
@@ -248,6 +249,23 @@ class MainWindow(QMainWindow):
             self.proc_actions.append(act)
         self.a_to_mono = next(a for a in self.proc_actions if a.objectName() == "p_to_mono")
         self.a_to_stereo = next(a for a in self.proc_actions if a.objectName() == "p_to_stereo")
+        m = mb.addMenu(t("m_effects"))
+        self.fx_actions = {}
+        for key, icon in (("eq", "fa6s.sliders"), ("geq", "fa6s.chart-column"), (None, None),
+                          ("comp", "fa6s.compress"), ("limit", "fa6s.arrows-down-to-line"), (None, None),
+                          ("delay", "fa6s.clone"), ("reverb", "fa6s.church"), (None, None),
+                          ("tempo", "fa6s.gauge-high"), (None, None),
+                          ("take_noise", "fa6s.eye-dropper"), ("nr", "fa6s.wand-magic-sparkles"),
+                          ("declick", "fa6s.bolt")):
+            if key is None:
+                m.addSeparator()
+                continue
+            if key == "take_noise":
+                act = A(m, icon, t("fx_take_noise"), self.take_noise_sample)
+            else:
+                act = A(m, icon, t("fx_" + key) + "…", lambda k=key: self.effect_dialog(k))
+            act.setObjectName("fx_" + key)
+            self.fx_actions[key] = act
         m = mb.addMenu(t("m_tools"))
         self.a_stats = A(m, "fa6s.table-list", t("stats") + "…", self.statistics_dialog, "Ctrl+I")
         m = mb.addMenu(t("m_transport"))
@@ -311,6 +329,11 @@ class MainWindow(QMainWindow):
                                        lambda: self.fade("fade_out"))):
             self.tb[key] = T(icon, text, slot, text)
             h.addWidget(self.tb[key])
+        h.addWidget(self._sep())
+        for key, icon, text, tip, fxk in (("eq", "fa6s.sliders", t("tb_eq"), t("tb_eq_tip"), "eq"),
+                                          ("nr", "fa6s.wand-magic-sparkles", t("tb_nr"), t("tb_nr_tip"), "nr")):
+            self.tb["fx_" + key] = T(icon, tip, lambda k=fxk: self.effect_dialog(k), text)
+            h.addWidget(self.tb["fx_" + key])
         h.addStretch(1)
         return bar
 
@@ -1047,6 +1070,71 @@ class MainWindow(QMainWindow):
             self._process(t("p_channels") + f": {lay}", lambda pr: proc.convert_document(d, d.rate, ch, lay, pr),
                           (0, d.frames), {"channels": ch, "layout": lay, "labels": tuple(ff.labels(ch, lay))})
 
+    # ── effects (0.3) ─────────────────────────────────────────
+    def effect_dialog(self, key: str) -> None:
+        """The window of an effect over the selection (or the whole file); Apply runs it as a job."""
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0:
+            return
+        from . import fxui
+        self.stop_play()
+        a, b = self._range(d)
+        whole = not d.sel
+        dlg = fxui.EffectDialog(self, key, d, a, b, whole)
+        self.fx_dlg = dlg
+        ok = dlg.exec()
+        self.fx_dlg = None
+        if not ok:
+            return
+        self.apply_effect(key, dlg.result_values(), dlg.keep_tail_on(), (a, b))
+
+    def apply_effect(self, key: str, values: dict, keep_tail: bool = False, rng=None) -> None:
+        from . import fx
+        d = self._edit_doc()
+        if d is None or d.frames <= 0:
+            return
+        eff = fx.get(key)
+        a, b = rng or self._range(d)
+        had_sel = d.sel
+        label = eff.label(values)
+        info = {}
+
+        def work(pr):
+            return fx.render(d, a, b, eff, values, pr, keep_tail, info)
+
+        def done(src, err):
+            if err:
+                if err != "cancel":
+                    QMessageBox.warning(self, APP_TITLE, t("op_failed", err))
+                return
+            end = a + src.frames if eff.realtime else b         # a kept tail reaches past b
+            d.replace(a, end, src, label, sel=(a, a + src.frames) if had_sel else None)
+            self._edited()
+            proc = info.get("proc")
+            if key == "declick" and proc is not None:
+                self._toast(t("dc_done", proc.found))
+        if not had_sel:
+            self._toast(t("p_whole"))
+        self.run_job(t("processing", label), work, done, d)
+
+    def take_noise_sample(self) -> None:
+        """Effects → Take a noise sample: the noise spectrum of the selection, kept for the session."""
+        from . import fx
+        d = self.doc
+        if d is None:
+            return
+        if not d.sel or d.sel[1] - d.sel[0] < 0.1 * d.rate:
+            QMessageBox.information(self, APP_TITLE, t("nr_need_sel"))
+            return
+        a, b = d.sel
+        b = min(b, a + 30 * d.rate)                 # half a minute of noise is plenty
+        try:
+            prof = fx.take_noise_profile(d, a, b)
+        except ValueError:
+            QMessageBox.information(self, APP_TITLE, t("nr_need_sel"))
+            return
+        self._toast(t("nr_taken", f"{prof['seconds']:.2f}"))
+
     # ── transport ─────────────────────────────────────────────
     def play_toggle(self) -> None:
         if self.player.state == "play":
@@ -1265,6 +1353,10 @@ class MainWindow(QMainWindow):
             a.setEnabled(on and not (busy and a not in (self.a_copy, self.a_close_all)))
         for a in self.proc_actions:
             a.setEnabled(has and not busy)
+        for k, a in self.fx_actions.items():
+            a.setEnabled(has and not busy and (k != "take_noise" or sel))
+        for key in ("fx_eq", "fx_nr"):
+            self.tb[key].setEnabled(has and not busy)
         self.a_to_mono.setEnabled(has and not busy and d.channels == 2)
         self.a_to_stereo.setEnabled(has and not busy and d.channels == 1)
         self.a_stats.setEnabled(has)

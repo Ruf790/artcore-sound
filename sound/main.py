@@ -43,10 +43,15 @@ def selftest() -> int:
     """CI: the built exe finds ffmpeg / ffprobe and PortAudio, opens a 5.1 AC-3 file made by ffmpeg, edits it
     (cut, paste, silence, trim, undo / redo, a fade, normalize, a rate change), saves it in every format and reads
     the results back, measures the loudness (SciPy) against ffmpeg's ebur128, normalizes to −23 LUFS, removes the
-    DC offset and trims the silence, builds the window and plays a second into the null output."""
+    DC offset and trims the silence, builds the window and plays a second into the null output. 0.3: the filters the
+    effects need (rubberband, atempo, asetrate, aresample), every effect on the 5.1 file checked by the numbers (EQ
+    gain, the limiter's true-peak ceiling, the compressor, the delay's tail, the reverb, noise reduction, a click found
+    and filled, tempo by its length, pitch by FFT) and a live preview through the null output."""
     import tempfile
     import time
     import traceback
+
+    import numpy as np
     out = os.path.join(tempfile.gettempdir(), "artcore_sound_selftest.txt")
     lines: list[str] = []
     try:
@@ -140,6 +145,7 @@ def selftest() -> int:
         lines.append(f"normalized: {lufs:.2f} LUFS (limited: {res.limited}), trimmed to {d.frames} frames")
         if abs(lufs + 23.0) > 0.1 or d.frames > 3 * 48000 - 23000:
             raise RuntimeError("normalize / trim silence")
+        _selftest_effects(d, lines)
         cfg = config.load()
         cfg.update(check_updates=False)
         os.environ["ARTCORE_AUDIO"] = "null"
@@ -157,6 +163,30 @@ def selftest() -> int:
         lines.append(f"window: {len(win.docs)} document, played to {pos} ({win.player.backend})")
         if not 0.5 * 48000 < pos < 1.6 * 48000:
             raise RuntimeError(f"playback position {pos}")
+        from . import fx
+        wd = win.doc
+        pk0 = 20 * np.log10(float(wd.peak().max()))
+        chain = fx.PreviewChain(fx.get("limit"), wd.rate, wd.labels, {"gain": 12.0, "ceiling": -12.0,
+                                                                     "true_peak": False})
+        win.player.play(wd, 0, wd.frames, loop=True, fx=chain)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 0.8:
+            app.processEvents()
+            time.sleep(0.02)
+        lv = win.player.levels()
+        top = 20 * np.log10(max(1e-9, float(np.max(lv)))) if lv is not None else -200.0
+        chain.set_bypass(True)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 0.5:
+            app.processEvents()
+            time.sleep(0.02)
+        lv2 = win.player.levels()
+        top2 = 20 * np.log10(max(1e-9, float(np.max(lv2)))) if lv2 is not None else -200.0
+        win.stop_play()
+        lines.append(f"preview: limiter +12 dB, ceiling −12 dB → meters {top:.2f} dBFS; bypass {top2:.2f} dBFS "
+                     f"(the file {pk0:.2f}); {chain.blocks} blocks")
+        if abs(top + 12.0) > 0.3 or abs(top2 - pk0) > 0.5 or chain.blocks < 5:
+            raise RuntimeError("the live preview")
         for x in win.docs:
             x.mark_saved()
         win.close()
@@ -168,6 +198,86 @@ def selftest() -> int:
         with open(out, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\nFAIL\n" + traceback.format_exc())
         return 1
+
+
+def _selftest_effects(d, lines: list) -> None:
+    """The effects (0.3) on the opened 5.1 document, checked by the numbers."""
+    import numpy as np
+    from . import analysis, ff, fx
+    from .fx import tempo as tm
+    flt = ff.caps()["filters"]
+    need = {"atempo", "asetrate", "aresample", "rubberband"}
+    lines.append("filters: " + ", ".join(f"{f} {'yes' if f in flt else 'NO'}" for f in sorted(need)))
+    if need - flt:
+        raise RuntimeError(f"this ffmpeg lacks the filters {sorted(need - flt)}")
+    n, rate = d.frames, d.rate
+    mid = slice(n // 3, 2 * n // 3)
+    x = d.read(0, n)
+    src = fx.render(d, 0, n, fx.get("eq"), {"b4_gain": 6.0, "b4_freq": 440.0, "b4_q": 0.7})
+    y = src.read(0, n)
+    g = 20 * np.log10(np.abs(y[mid, 0]).max() / np.abs(x[mid, 0]).max())
+    lines.append(f"  EQ +6 dB at 440 Hz: {g:+.2f} dB")
+    if abs(g - 6.0) > 0.1:
+        raise RuntimeError("EQ")
+    src = fx.render(d, 0, n, fx.get("limit"), {"gain": 24.0, "ceiling": -6.0, "true_peak": True})
+    tp = analysis.to_db(_tp_of(src, rate, d.labels))
+    lines.append(f"  limiter +24 dB, ceiling −6 dBTP: true peak {tp:.2f} dBTP")
+    if not -6.5 < tp <= -5.9:
+        raise RuntimeError("limiter")
+    src = fx.render(d, 0, n, fx.get("comp"), {"threshold": -30.0, "ratio": 4.0, "knee": 0.0, "attack": 1.0})
+    lvl = 20 * np.log10(np.abs(x[mid, 0]).max())
+    out = 20 * np.log10(np.abs(src.read(0, n)[mid, 0]).max())
+    want = lvl - max(0.0, (lvl + 30.0) * 0.75)
+    lines.append(f"  compressor −30 dB 4:1: {lvl:.2f} → {out:.2f} dBFS (curve {want:.2f})")
+    if abs(out - want) > 0.3:
+        raise RuntimeError("compressor")
+    a = n - rate // 2
+    src = fx.render(d, a, n, fx.get("delay"), {"time": 300.0, "feedback": 30.0}, keep_tail=True)
+    src2 = fx.render(d, a, n, fx.get("reverb"), {"decay": 1.0}, keep_tail=True)
+    tails = ((src.frames - rate // 2) / rate, (src2.frames - rate // 2) / rate)
+    lines.append(f"  delay / reverb tails: {tails[0]:.2f} s / {tails[1]:.2f} s")
+    if src.frames < rate // 2 + 0.6 * rate or src2.frames < rate // 2 + 0.8 * rate:
+        raise RuntimeError("tails")
+    rng = np.random.default_rng(1)
+    fx.get("nr").profile = fx.noise_profile([rng.standard_normal((rate, d.channels)) * 0.01], rate, d.channels)
+    src = fx.render(d, 0, n, fx.get("nr"), {"reduction": 20.0})
+    y = src.read(0, n)
+    keep = 20 * np.log10(np.abs(y[mid, 0]).max() / np.abs(x[mid, 0]).max())
+    lines.append(f"  noise reduction: the tone {keep:+.2f} dB")
+    if abs(keep) > 0.5 or not np.isfinite(y).all():
+        raise RuntimeError("noise reduction")
+    from .doc import Document
+    from . import store
+    xc = x.copy()
+    xc[rate, 0] += 0.5
+    dc = Document(rate=rate, channels=d.channels, folder=d.folder, labels=d.labels, layout=d.layout)
+    dc.set_initial(store.from_array(d.folder, xc))
+    marks = fx.scan_clicks(dc, 0, n, {"sensitivity": 50.0})
+    src = fx.render(dc, 0, n, fx.get("declick"), {})
+    err = float(np.abs(src.read(rate - 4, 9)[:, 0] - x[rate - 4:rate + 5, 0]).max())
+    lines.append(f"  click removal: found {len(marks)} at {marks[:3]}, filled to {err:.4f}")
+    if not any(abs(m - rate) <= 2 for m in marks) or err > 0.05:
+        raise RuntimeError("click removal")
+    t = fx.get("tempo")
+    src = t.render(d, 0, n, {"tempo": 25.0})
+    p = t.render(d, 0, n, {"semitones": 12})
+    yp = p.read(0, p.frames)[p.frames // 4:3 * p.frames // 4, 0]
+    sp = np.abs(np.fft.rfft(yp * np.hanning(len(yp))))
+    f = np.argmax(sp) * rate / len(yp)
+    lines.append(f"  tempo +25 %: {n} → {src.frames} frames; pitch +12: 440 → {f:.1f} Hz ({tm.engine({})})")
+    if abs(src.frames - n / 1.25) > 0.01 * n or abs(f - 880) > 4:
+        raise RuntimeError("tempo / pitch")
+
+
+def _tp_of(src, rate: int, labels) -> float:
+    from . import analysis
+    an = analysis.Analyzer(rate, labels, loudness=False, true_peak=True)
+    pos = 0
+    while pos < src.frames:
+        k = min(65536, src.frames - pos)
+        an.feed(src.read(pos, k))
+        pos += k
+    return an.result().true_peak
 
 
 def main() -> int:

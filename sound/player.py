@@ -2,7 +2,11 @@
 Settings, with the document's own channels (5.1 plays as 5.1) and rate (Windows converts when the device runs at
 another one). A reader thread keeps about half a second of sound ready, so the audio callback never touches the
 disk; the callback only copies. Without a sound card (CI, ARTCORE_AUDIO=null) a timer plays into nothing at the
-same pace, so the play cursor and the meters behave the same."""
+same pace, so the play cursor and the meters behave the same.
+
+The preview of an effect (0.3) plays through an fx chain run in the reader thread, never in the callback: what the
+reader prepares goes through it before the queue, and the meters show the processed sound. With an effect the reader
+keeps less ready (AHEAD_FX), so a slider is heard within a tenth of a second."""
 from __future__ import annotations
 
 import collections
@@ -14,6 +18,8 @@ import numpy as np
 
 BLOCK = 2048                   # frames per chunk the reader prepares
 AHEAD = 0.5                    # seconds kept ready
+AHEAD_FX = 0.12                # … while an effect is previewed (its changes are heard sooner)
+BLOCK_FX = 1024
 
 
 def _sd():
@@ -125,11 +131,13 @@ class Player:
         self._run = False
         self._cur = None                     # the chunk being played: [pos, data, used, peaks]
         self._paused_at = 0
+        self.fx = None                       # an fx.PreviewChain (or anything with process(x) → y) while previewing
         self.finished = threading.Event()
 
     # ── control ───────────────────────────────────────────────
-    def play(self, doc, start: int, end: int | None = None, loop: bool = False) -> bool:
+    def play(self, doc, start: int, end: int | None = None, loop: bool = False, fx=None) -> bool:
         self.stop()
+        self.fx = fx
         end = doc.frames if end is None else min(end, doc.frames)
         if end - start <= 0:
             return False
@@ -151,7 +159,7 @@ class Player:
             return False
         self._run = True
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._fill(int(self.out_rate * 0.15))        # something ready before the first callback
+        self._fill(int(self.out_rate * (0.06 if self.fx is not None else 0.15)))  # ready before the first callback
         self._reader.start()
         self.state = "play"
         try:
@@ -254,7 +262,7 @@ class Player:
         return True
 
     def _read_loop(self) -> None:
-        want = int(self.out_rate * AHEAD)
+        want = int(self.out_rate * (AHEAD_FX if self.fx is not None else AHEAD))
         while self._run:
             if self._qframes < want and not self._eof:
                 self._fill(want)
@@ -271,8 +279,10 @@ class Player:
                 else:
                     self._eof = True
                     break
-            n = min(BLOCK, self.end - p)
+            n = min(BLOCK if self.fx is None else BLOCK_FX, self.end - p)
             x = doc.read(p, n)
+            if self.fx is not None:
+                x = self.fx.process(x)
             peaks = np.abs(x).max(axis=0) if n else np.zeros(doc.channels, np.float32)
             if self._mix is not None:
                 x = x @ self._mix
