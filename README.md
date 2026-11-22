@@ -1,6 +1,6 @@
 # ArtCore Sound
 
-Аудиоредактор для Windows в духе Sound Forge: волна по каналам, правка с неограниченной отменой, обработка и эффекты. Шестая программа семейства ArtCore — рядом с [ArtCore Convert](https://github.com/Ruf790/artcore-convert), [ArtCore Player](https://github.com/Ruf790/artcore-player), [ArtCore Music](https://github.com/Ruf790/artcore-music), ArtCore Client и ArtCore Music Remote.
+Аудиоредактор для Windows: волна по каналам, правка с неограниченной отменой, обработка и эффекты. Шестая программа семейства ArtCore — рядом с [ArtCore Convert](https://github.com/Ruf790/artcore-convert), [ArtCore Player](https://github.com/Ruf790/artcore-player), [ArtCore Music](https://github.com/Ruf790/artcore-music), ArtCore Client и ArtCore Music Remote.
 
 *An audio editor for Windows in the spirit of Sound Forge. English below.*
 
