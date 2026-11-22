@@ -1,6 +1,7 @@
 """Screenshots of the window (offscreen Qt) in the dark and the light theme: the empty window, a stereo file with a
 selection while it plays (the status bar measured), the sample-level zoom, a 5.1 file, Tools → Statistics of the
-5.1 file, the Normalize dialog. Test sound is made by ffmpeg.
+5.1 file, the Normalize dialog, and (0.3) the effect windows while they preview: the parametric EQ, the compressor,
+the noise reduction with its noise sample, the reverb. Test sound is made by ffmpeg.
 
 Usage: python tools/screenshots.py OUT_DIR [ru|en]"""
 import os
@@ -105,6 +106,7 @@ def main(out: str, lang: str = "ru") -> int:
         pump(0.2)
         nd.grab().save(os.path.join(out, f"normalize_{theme}.png"))
         nd.close()
+        shoot_effects(w, out, theme, pump)
         for x in w.docs:
             x.mark_saved()
         w.close()
@@ -112,6 +114,37 @@ def main(out: str, lang: str = "ru") -> int:
         pump(0.1)
     print("screenshots in", out)
     return 0
+
+
+def shoot_effects(w, out: str, theme: str, pump) -> None:
+    """The effect windows over a selection of the song, previewing (the meters and the reduction live)."""
+    from sound import fx, fxui
+    w.tabs.setCurrentIndex(0)
+    pump(0.2)
+    d = w.doc
+    import numpy as np
+    hiss = 0.08 * (np.random.default_rng(0).random((66150, 2)) - 0.5)     # the song's own noise, alone
+    fx.get("nr").profile = {**fx.noise_profile([hiss], 44100, 2), "seconds": 1.5}
+    d.sel = (int(20.5 * 44100), int(31.2 * 44100))
+    w.wave.refresh()
+    w._on_selection()
+    shots = (("eq", {"b1_on": True, "b1_freq": 45.0, "b2_gain": 4.5, "b2_freq": 110.0, "b3_gain": -3.5,
+                     "b3_freq": 320.0, "b3_q": 1.6, "b5_gain": 3.0, "b5_freq": 3200.0, "b6_gain": 2.5}, 980, 700),
+             ("comp", {"threshold": -26.0, "ratio": 4.0, "knee": 8.0, "attack": 8.0, "release": 160.0,
+                       "makeup": 6.0}, 960, 430),
+             ("nr", {"reduction": 18.0, "sensitivity": 6.0}, 780, 620),
+             ("reverb", {"size": 80.0, "decay": 2.4, "predelay": 25.0, "mix": 30.0}, 720, 470))
+    for key, vals, wd, ht in shots:
+        a, b = d.sel
+        dlg = fxui.EffectDialog(w, key, d, a, b, False)
+        dlg.set_values({**dlg.values, **vals})
+        dlg.resize(wd, ht)
+        dlg.show()
+        dlg.b_preview.setChecked(True)
+        pump(1.0)
+        dlg.grab().save(os.path.join(out, f"fx_{key}_{theme}.png"))
+        dlg.reject()
+        pump(0.1)
 
 
 if __name__ == "__main__":

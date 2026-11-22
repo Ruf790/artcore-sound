@@ -62,6 +62,7 @@ class WaveView(QWidget):
         super().__init__(parent)
         self.doc = None
         self.play_pos: int | None = None
+        self._marks = None               # (doc, version, frames): the clicks found by Effects → Click removal
         self._cache: QPixmap | None = None
         self._cache_key = None
         self._drag = None                # anchor frame while selecting with the mouse
@@ -128,6 +129,17 @@ class WaveView(QWidget):
         self._cache_key = None
         self.update()
         self.viewChanged.emit()
+
+    def set_marks(self, doc, frames) -> None:
+        """Red marks at these frames (the clicks found) until the document changes."""
+        self._marks = (doc, doc.version, list(frames)) if frames else None
+        self.update()
+
+    def marks(self) -> list:
+        m = self._marks
+        if m is None or m[0] is not self.doc or m[1] != self.doc.version:
+            return []
+        return m[2]
 
     def refresh(self) -> None:
         """The document changed (an edit / undo): redraw everything."""
@@ -403,6 +415,19 @@ class WaveView(QWidget):
         p.setBrush(style.qcolor(style.W_CURSOR))
         p.drawPolygon(QPolygonF([QPointF(xc - 5, RULER_H - 7), QPointF(xc + 5, RULER_H - 7),
                                  QPointF(xc + 0.5, RULER_H - 1)]))
+        marks = self.marks()
+        if marks:
+            a, b = self.visible()
+            col = style.qcolor(style.W_CLIP)
+            p.setPen(QPen(col, 1))
+            p.setBrush(col)
+            for f in marks:
+                if a <= f <= b:
+                    xm = self.x_of(f)
+                    p.drawLine(QLineF(xm, RULER_H, xm, self.height()))
+                    p.drawPolygon(QPolygonF([QPointF(xm - 4, RULER_H), QPointF(xm + 4, RULER_H),
+                                             QPointF(xm, RULER_H + 7)]))
+            p.setBrush(Qt.NoBrush)
         if self.play_pos is not None:
             xp = self.x_of(self.play_pos)
             p.setPen(QPen(style.qcolor(style.W_PLAY), 2))
