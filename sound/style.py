@@ -432,6 +432,10 @@ QLineEdit#timeField {{ font-family: "Consolas", "DejaVu Sans Mono", monospace; }
 QToolButton#play {{ border-radius: 17px; padding: 7px; }}
 QToolButton#play:disabled {{ background: {PANEL2}; }}
 QTabBar#plTabs {{ background: {BG}; }}
+QTableWidget#stats {{ background: {PANEL}; color: {TEXT}; border: 1px solid {BORDER}; gridline-color: {BORDER};
+                      alternate-background-color: {ALT}; selection-background-color: {SEL};
+                      selection-color: {SEL_TEXT}; font-family: "Consolas", "DejaVu Sans Mono", monospace; }}
+QTableWidget#stats QTableCornerButton::section {{ background: {PANEL}; border: none; }}
 """
 
 

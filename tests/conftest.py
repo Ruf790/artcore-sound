@@ -55,6 +55,35 @@ def media_dir(tmp_path_factory):
     return d
 
 
+@pytest.fixture(scope="session")
+def loud_dir(tmp_path_factory):
+    """Files for the loudness and the analysis (0.2), made by ffmpeg: the EBU Tech 3341 sine (1 kHz, −23 dBFS
+    stereo, 20 s), pink noise with loud / quiet halves (the relative gate and the loudness range), a 5.1 mix with
+    the surrounds and the LFE busy, brown noise in mono at 22.05 kHz, a tone with a DC offset, a tone between
+    silences, a file that clips and one of loud clicks over a quiet tone."""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is needed")
+    d = str(tmp_path_factory.mktemp("loud"))
+    ff("-f", "lavfi", "-i", "sine=f=1000:r=48000:d=20", "-af", "volume=0.5663563,pan=stereo|c0=c0|c1=c0",
+       "-c:a", "pcm_f32le", os.path.join(d, "ebu1k.wav"))           # sine's own amplitude is 1/8: ×0.566 → −23 dBFS
+    ff("-f", "lavfi", "-i", "anoisesrc=c=pink:r=44100:d=30:a=0.3:s=5,volume='if(lt(mod(t,10),5),1,0.1)':eval=frame",
+       "-ac", "2", "-c:a", "pcm_s24le", os.path.join(d, "pink.wav"))
+    ff("-f", "lavfi", "-i", "aevalsrc='0.3*sin(2*PI*220*t)*lt(t,8)|0.2*sin(2*PI*330*t)|0.25*sin(2*PI*100*t)"
+       "|0.5*sin(2*PI*50*t)|0.3*(random(0)-0.5)|0.1*(random(1)-0.5)*(1+3*gt(t,12))':s=48000:d=20:c=5.1(side)",
+       "-c:a", "pcm_f32le", os.path.join(d, "six.wav"))
+    ff("-f", "lavfi", "-i", "anoisesrc=c=brown:r=22050:d=12:a=0.4:s=3,volume='0.05+0.95*abs(sin(t))':eval=frame",
+       "-c:a", "pcm_s16le", os.path.join(d, "mono.wav"))
+    ff("-f", "lavfi", "-i", "aevalsrc='0.1+0.3*sin(2*PI*440*t)|-0.05+0.2*sin(2*PI*660*t)':s=44100:d=12",
+       "-c:a", "pcm_f32le", os.path.join(d, "dc_tone.wav"))
+    ff("-f", "lavfi", "-i", "aevalsrc='0.5*sin(2*PI*440*t)*between(t,1,3)|0.3*sin(2*PI*660*t)*between(t,1.2,2.9)'"
+       ":s=44100:d=3.5", "-c:a", "pcm_f32le", os.path.join(d, "gap.wav"))           # 1 s silence, 2 s, 0.5 s
+    ff("-f", "lavfi", "-i", "aevalsrc='1.3*sin(2*PI*100*t)|0.5*sin(2*PI*100*t)':s=48000:d=1", "-c:a", "pcm_s16le",
+       os.path.join(d, "clipped.wav"))
+    ff("-f", "lavfi", "-i", "aevalsrc='0.9*sin(2*PI*1000*t)*lt(mod(t,1),0.003)+0.02*sin(2*PI*300*t)':s=48000:d=10",
+       "-ac", "2", "-c:a", "pcm_f32le", os.path.join(d, "peaky.wav"))            # loud clicks, quiet in between
+    return d
+
+
 @pytest.fixture()
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("ARTCORE_SOUND_DATA", str(tmp_path / "data"))

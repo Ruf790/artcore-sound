@@ -42,7 +42,8 @@ class TitleBars(QObject):
 def selftest() -> int:
     """CI: the built exe finds ffmpeg / ffprobe and PortAudio, opens a 5.1 AC-3 file made by ffmpeg, edits it
     (cut, paste, silence, trim, undo / redo, a fade, normalize, a rate change), saves it in every format and reads
-    the results back, builds the window and plays a second into the null output."""
+    the results back, measures the loudness (SciPy) against ffmpeg's ebur128, normalizes to −23 LUFS, removes the
+    DC offset and trims the silence, builds the window and plays a second into the null output."""
     import tempfile
     import time
     import traceback
@@ -116,6 +117,29 @@ def selftest() -> int:
         lines.append(f"to 44.1 kHz stereo: {s.frames} frames")
         if abs(s.frames - 3 * 44100) > 64 or s.channels != 2:
             raise RuntimeError("the rate / channel change failed")
+        from . import analysis
+        import re
+        wav = os.path.join(tmp, "out_wav.wav")
+        st = analysis.analyze(d)
+        r = ff.run([ff.ffmpeg(), "-hide_banner", "-nostats", "-i", wav, "-af", "ebur128=peak=true", "-f", "null", "-"],
+                   120)
+        summ = r.stderr[r.stderr.rfind("Summary"):]
+        ref = float(re.search(r"I:\s*(-?[\d.]+) LUFS", summ).group(1))
+        lines.append(f"loudness: {st.integrated:.2f} LUFS (ffmpeg {ref:.1f}), LRA {st.lra:.1f} LU, "
+                     f"true peak {analysis.to_db(st.true_peak):.2f} dBTP, RMS {analysis.to_db(st.rms):.2f} dBFS")
+        if abs(st.integrated - ref) > 0.15:
+            raise RuntimeError("the loudness does not match ffmpeg's")
+        s, res = proc.normalize(d, 0, d.frames, "loudness", -23.0, -1.0)
+        d.replace(0, d.frames, s, "normalize lufs")
+        s, _dc = proc.remove_dc(d, 0, d.frames)
+        d.replace(0, d.frames, s, "dc")
+        lufs = analysis.analyze(d).integrated
+        d.silence(0, 24000)
+        edges = proc.sound_edges(d, 0, d.frames, -60.0)
+        d.keep(0, d.frames, *edges)
+        lines.append(f"normalized: {lufs:.2f} LUFS (limited: {res.limited}), trimmed to {d.frames} frames")
+        if abs(lufs + 23.0) > 0.1 or d.frames > 3 * 48000 - 23000:
+            raise RuntimeError("normalize / trim silence")
         cfg = config.load()
         cfg.update(check_updates=False)
         os.environ["ARTCORE_AUDIO"] = "null"

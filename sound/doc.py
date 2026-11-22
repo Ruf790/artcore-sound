@@ -367,6 +367,17 @@ class Document:
             return
         self._apply(label, self.slice(a, b), None, 0)
 
+    def keep(self, a: int, b: int, a2: int, b2: int, label: str = "trim silence") -> None:
+        """Of [a, b) keep only [a2, b2) — the rest of the document stays (Обрезать тишину: no sound is written).
+        A selection becomes the part kept."""
+        a, b = self._range(a, b)
+        a2, b2 = max(a, int(a2)), min(b, int(b2))
+        if b2 <= a2 or (a2, b2) == (a, b):
+            return
+        whole = (a, b) == (0, self.frames)
+        sel = None if whole or not self.sel else (a, a + b2 - a2)
+        self._apply(label, self.slice(0, a) + self.slice(a2, b2) + self.slice(b, self.frames), sel, a)
+
     def replace(self, a: int, b: int, src: Source, label: str, sel=..., **meta) -> None:
         """Put the whole source in place of [a, b) — the result of an effect. The source may be longer or
         shorter (tempo, resample); with meta (rate, channels …) the whole document is replaced."""

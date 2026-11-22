@@ -13,19 +13,22 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, Q
                                QMessageBox, QProgressBar, QScrollBar, QSplitter, QTabBar,
                                QToolButton, QVBoxLayout, QWidget)
 
-from . import APP_TITLE, AUDIO_EXT, VERSION, VIDEO_EXT, config, ff, media, proc, style, winint
+from . import APP_TITLE, AUDIO_EXT, VERSION, VIDEO_EXT, analysis, config, ff, media, proc, style, winint
 from .doc import Document, fmt_time, parse_time
 from .i18n import fmt_bytes, t
 from .player import Player
 from .waveview import Meters, Overview, WaveView
 
 UNDO_KEYS = {"open", "new", "cut", "paste", "delete", "silence", "insert silence", "trim"}
+STATS_DELAY = 300            # ms after the last change of the selection before the status bar measures it
+STATS_CACHE = 64
 
 
 class Bridge(QObject):
     progress = Signal(float)
     done = Signal(object, object, object)       # result, error (str / None / "cancel"), the job's on_done
     update = Signal(object, str)
+    stats = Signal(object, object)              # key, analysis.Stats (the status bar's background measuring)
 
 
 class MainWindow(QMainWindow):
@@ -41,6 +44,15 @@ class MainWindow(QMainWindow):
         self.bridge.progress.connect(self._on_progress)
         self.bridge.done.connect(self._on_job_done)
         self.bridge.update.connect(self._on_update_result)
+        self.bridge.stats.connect(self._on_stats)
+        self.stats_cache: dict = {}             # (folder, version, a, b) → analysis.Stats
+        self._stats_key = None                  # what the status bar shows
+        self._stats_run = None                  # (key, Progress) of the measuring in the background
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setSingleShot(True)
+        self._stats_timer.setInterval(STATS_DELAY)
+        self._stats_timer.timeout.connect(self._stats_start)
+        self.stats_dlg = None
         self.job = None                         # (label, Progress) while a long job runs
         self._job_doc = None
         self._open_queue: list = []
@@ -218,14 +230,26 @@ class MainWindow(QMainWindow):
                                 (None, None, None),
                                 ("fa6s.right-left", "p_reverse", lambda: self.simple_op("reverse")),
                                 ("fa6s.arrow-down-up-across-line", "p_invert", lambda: self.simple_op("invert")),
+                                ("fa6s.arrows-up-to-line", "p_dc", self.remove_dc),
+                                (None, None, None),
+                                ("fa6s.down-left-and-up-right-to-center", "p_trim_silence", self.trim_silence_dialog),
                                 (None, None, None),
                                 ("fa6s.gauge", "p_resample", self.resample_dialog),
-                                ("fa6s.code-branch", "p_channels", self.channels_dialog)):
+                                ("fa6s.code-branch", "p_channels", self.channels_dialog),
+                                ("fa6s.compress", "p_to_mono", self.to_mono_dialog),
+                                ("fa6s.expand", "p_to_stereo", self.to_stereo)):
             if key is None:
                 m.addSeparator()
                 continue
-            dots = "…" if key in ("p_gain", "p_normalize", "p_resample", "p_channels") else ""
-            self.proc_actions.append(A(m, icon, t(key) + dots, slot))
+            dots = "…" if key in ("p_gain", "p_normalize", "p_resample", "p_channels", "p_trim_silence",
+                                  "p_to_mono") else ""
+            act = A(m, icon, t(key) + dots, slot)
+            act.setObjectName(key)
+            self.proc_actions.append(act)
+        self.a_to_mono = next(a for a in self.proc_actions if a.objectName() == "p_to_mono")
+        self.a_to_stereo = next(a for a in self.proc_actions if a.objectName() == "p_to_stereo")
+        m = mb.addMenu(t("m_tools"))
+        self.a_stats = A(m, "fa6s.table-list", t("stats") + "…", self.statistics_dialog, "Ctrl+I")
         m = mb.addMenu(t("m_transport"))
         self.a_play = A(m, "fa6s.play", t("play"), self.play_toggle, "Space")
         self.a_play_all = A(m, "fa6s.circle-play", t("play_all"), self.play_all, "Shift+Space")
@@ -363,10 +387,13 @@ class MainWindow(QMainWindow):
         for w in (self.job_label, self.job_bar, self.job_cancel):
             sb.addPermanentWidget(w)
             w.hide()
+        self.st_stats = QLabel("")
+        self.st_stats.setToolTip(t("st_stats_tip"))
+        self.st_stats.setTextFormat(Qt.RichText)
         self.st_sel = QLabel("")
         self.st_disk = QLabel("")
         self.st_dev = QLabel("")
-        for w in (self.st_sel, self.st_disk, self.st_dev):
+        for w in (self.st_stats, self.st_sel, self.st_disk, self.st_dev):
             w.setObjectName("hint")
             sb.addPermanentWidget(w)
 
@@ -829,8 +856,9 @@ class MainWindow(QMainWindow):
         m.exec(pos)
 
     # ── processing ────────────────────────────────────────────
-    def _process(self, label: str, make, rng=None, meta=None) -> None:
-        """make(progress) → a new source for rng (default: the selection or the whole file) in a thread."""
+    def _process(self, label: str, make, rng=None, meta=None, after=None) -> None:
+        """make(progress) → a new source for rng (default: the selection or the whole file) in a thread; after()
+        once the result is in the document."""
         d = self._edit_doc()
         if d is None or d.frames <= 0:
             return
@@ -850,6 +878,8 @@ class MainWindow(QMainWindow):
             else:
                 d.replace(a, b, src, label, sel=had_sel if had_sel else None)
             self._edited()
+            if after is not None:
+                after()
         if whole and not had_sel and not meta:
             self._toast(t("p_whole"))
         self.run_job(t("processing", label), make, done, d)
@@ -877,20 +907,118 @@ class MainWindow(QMainWindow):
             self.simple_op("gain", db=s.value())
 
     def normalize_dialog(self) -> None:
+        """By the peak or by the loudness (EBU R128) with a true-peak ceiling; says when the ceiling held the
+        gain back."""
         d = self.doc
         if d is None or self._busy() or d.frames <= 0:
             return
-        from .dialogs import ValueDialog
+        from .dialogs import NormalizeDialog, fmt_db
         a, b = self._range(d)
         pk = float(d.peak(a, b).max())
         if pk <= 0:
             QMessageBox.information(self, APP_TITLE, t("p_silent"))
             return
-        now = f"{proc.gain_to_db(pk):.2f}"
-        dlg = ValueDialog(t("p_norm_title"), self, t("p_norm_now", now) + ("" if d.sel else "\n" + t("p_whole")))
-        s = dlg.spin(t("p_norm_to"), -0.1, -60, 0, " dBFS", 2, 0.1)
-        if dlg.exec():
-            self.simple_op("normalize", db=s.value())
+        now = t("p_norm_now", fmt_db(proc.gain_to_db(pk), 2))
+        st = self.stats_cache.get(self.stats_key(d, a, b))
+        if st is not None and st.loudness:
+            now += " · " + t("nz_now_lufs", fmt_db(st.integrated))
+        dlg = NormalizeDialog(self.cfg, now, not d.sel, self)
+        if not dlg.exec():
+            return
+        opts = dlg.settings()
+        self.cfg["normalize"] = opts
+        config.save(self.cfg)
+        mode = opts["mode"]
+        target = opts["target"] if mode == "loudness" else opts["peak"]
+        out = {}
+
+        def make(pr):
+            src, res = proc.normalize(d, a, b, mode, target, opts["ceiling"], opts["peak_tp"], pr)
+            out["res"] = res
+            return src
+        label = t("p_norm_lufs", fmt_db(target)) if mode == "loudness" else t("p_normalize")
+        self._process(label, make, (a, b), after=lambda: self._normalized(out.get("res")))
+
+    def _normalized(self, res) -> None:
+        from .dialogs import fmt_db
+        if res is None:
+            return
+        if res.limited:
+            QMessageBox.information(self, APP_TITLE, t("nz_limited", fmt_db(res.gain_db, 2), fmt_db(res.after),
+                                                       fmt_db(res.true_peak_after)))
+        elif res.mode == "loudness":
+            self._toast(t("nz_done", fmt_db(res.before), fmt_db(res.after), fmt_db(res.gain_db, 2)))
+
+    def remove_dc(self) -> None:
+        d = self.doc
+        if d is None or d.frames <= 0:
+            return
+        a, b = self._range(d)
+        out = {}
+
+        def make(pr):
+            src, dc = proc.remove_dc(d, a, b, pr)
+            out["dc"] = dc
+            return src
+
+        def after():
+            from .dialogs import fmt_db
+            if "dc" in out:
+                self._toast(t("dc_done", ", ".join(f"{lab} {fmt_db(v * 100, 3)} %"
+                                                   for lab, v in zip(d.labels, out["dc"]))))
+        self._process(t("p_dc"), make, (a, b), after=after)
+
+    def trim_silence_dialog(self) -> None:
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0:
+            return
+        from .dialogs import ValueDialog
+        o = self.cfg.get("trim_silence") or {}
+        dlg = ValueDialog(t("ts_title"), self, t("ts_note") + ("" if d.sel else "\n" + t("ts_whole")))
+        thr = dlg.spin(t("ts_threshold"), float(o.get("threshold", -60.0)), -120, 0, " dBFS", 1, 1.0)
+        mar = dlg.spin(t("ts_margin"), float(o.get("margin", 50)), 0, 10000, " ms", 0, 10)
+        if not dlg.exec():
+            return
+        self.cfg["trim_silence"] = {"threshold": thr.value(), "margin": mar.value()}
+        config.save(self.cfg)
+        d = self._edit_doc()
+        if d is None:
+            return
+        a, b = self._range(d)
+        edges = proc.sound_edges(d, a, b, thr.value(), int(round(mar.value() * d.rate / 1000)))
+        if edges is None:
+            QMessageBox.information(self, APP_TITLE, t("ts_all_quiet", f"{thr.value():.0f}"))
+            return
+        if edges == (a, b):
+            self._toast(t("ts_nothing"))
+            return
+        cut = (edges[0] - a, b - edges[1])
+        d.keep(a, b, *edges, label=t("p_trim_silence"))
+        self._edited()
+        self._toast(t("ts_done", fmt_time(cut[0], d.rate), fmt_time(cut[1], d.rate)))
+
+    def to_mono_dialog(self) -> None:
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0 or d.channels != 2:
+            return
+        from .dialogs import ValueDialog
+        dlg = ValueDialog(t("tm_title"), self, t("tm_note"))
+        c = dlg.combo(t("tm_how"), [(t("tm_mix"), "mix"), (t("tm_left"), "left"), (t("tm_right"), "right")],
+                      self.cfg.get("to_mono", "mix"))
+        if not dlg.exec():
+            return
+        mode = c.currentData()
+        self.cfg["to_mono"] = mode
+        config.save(self.cfg)
+        self._process(t("p_to_mono") + f" ({t('tm_' + mode).lower()})", lambda pr: proc.stereo_to_mono(d, mode, pr),
+                      (0, d.frames), {"channels": 1, "layout": "mono", "labels": ("M",)})
+
+    def to_stereo(self) -> None:
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0 or d.channels != 1:
+            return
+        self._process(t("p_to_stereo"), lambda pr: proc.mono_to_stereo(d, pr), (0, d.frames),
+                      {"channels": 2, "layout": "stereo", "labels": ("L", "R")})
 
     def resample_dialog(self) -> None:
         d = self.doc
@@ -1052,6 +1180,7 @@ class MainWindow(QMainWindow):
                 f.setText("")
             self.counter.setText(fmt_time(0, 48000))
             self.st_sel.setText("")
+            self._stats_request()
             self._update_actions()
             return
         if self.player.state != "play":
@@ -1067,6 +1196,7 @@ class MainWindow(QMainWindow):
             self.f_end.setText("")
             self.f_len.setText("")
             self.st_sel.setText(t("st_frames", f"{d.frames:,}".replace(",", " ")))
+        self._stats_request()
         self._update_actions()
 
     def _on_time_edit(self, key: str, e: QLineEdit) -> None:
@@ -1135,6 +1265,9 @@ class MainWindow(QMainWindow):
             a.setEnabled(on and not (busy and a not in (self.a_copy, self.a_close_all)))
         for a in self.proc_actions:
             a.setEnabled(has and not busy)
+        self.a_to_mono.setEnabled(has and not busy and d.channels == 2)
+        self.a_to_stereo.setEnabled(has and not busy and d.channels == 1)
+        self.a_stats.setEnabled(has)
         self.a_undo.setText(t("undo_n", self._label(d.undo_label())) if has and d.can_undo() else t("undo"))
         self.a_redo.setText(t("redo_n", self._label(d.redo_label())) if has and d.can_redo() else t("redo"))
         for key, act in (("save", self.a_save), ("undo", self.a_undo), ("redo", self.a_redo), ("cut", self.a_cut),
@@ -1182,6 +1315,105 @@ class MainWindow(QMainWindow):
 
     def _toast(self, text: str) -> None:
         self.statusBar().showMessage(text, 5000)
+
+    # ── the measuring: the status bar and Tools → Statistics ──
+    @staticmethod
+    def stats_key(d: Document, a: int, b: int) -> tuple:
+        return (d.folder, d.version, int(a), int(b))
+
+    def stats_store(self, key, st) -> None:
+        """Keep a result (one with the true peak replaces one without)."""
+        old = self.stats_cache.get(key)
+        if old is not None and old.has_true_peak and not st.has_true_peak:
+            return
+        self.stats_cache.pop(key, None)
+        self.stats_cache[key] = st
+        while len(self.stats_cache) > STATS_CACHE:
+            self.stats_cache.pop(next(iter(self.stats_cache)))
+        if key == self._stats_key:
+            self._show_stats(st)
+
+    def _stats_request(self) -> None:
+        """The selection or the file changed: the peak at once (from the peak levels), RMS / LUFS / clipping
+        after STATS_DELAY in the background — or from the cache."""
+        d = self.doc
+        if d is None or d.frames <= 0:
+            self._stats_key = None
+            self._stats_cancel()
+            self._stats_timer.stop()
+            self.st_stats.setText("")
+            return
+        a, b = d.sel if d.sel else (0, d.frames)
+        key = self.stats_key(d, a, b)
+        if key == self._stats_key:
+            return
+        self._stats_key = key
+        st = self.stats_cache.get(key)
+        if st is not None:
+            self._stats_cancel()
+            self._stats_timer.stop()
+            self._show_stats(st)
+            return
+        if self._stats_run and self._stats_run[0] != key:
+            self._stats_cancel()
+        self._show_stats(None, float(d.peak(a, b).max()))
+        self._stats_timer.start()
+
+    def _stats_start(self) -> None:
+        d = self.doc
+        key = self._stats_key
+        if d is None or key is None or key in self.stats_cache or (self._stats_run and self._stats_run[0] == key):
+            return
+        if key[:2] != (d.folder, d.version):
+            return
+        _f, _v, a, b = key
+        prog = media.Progress()
+        self._stats_run = (key, prog)
+
+        def work():
+            try:
+                st = analysis.analyze(d, a, b, prog, loudness=True, true_peak=False)
+            except Exception:                 # cancelled, or the file closed / edited under it
+                st = None
+            self.bridge.stats.emit(key, st)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _stats_cancel(self) -> None:
+        if self._stats_run:
+            self._stats_run[1].cancel()
+            self._stats_run = None
+
+    def _on_stats(self, key, st) -> None:
+        if self._stats_run and self._stats_run[0] == key:
+            self._stats_run = None
+        if st is not None:
+            self.stats_store(key, st)
+
+    def _show_stats(self, st, peak: float | None = None) -> None:
+        from .dialogs import fmt_db
+        pk = st.peak if st is not None else peak
+        pend = "…"
+        parts = [t("st_peak_v", fmt_db(proc.gain_to_db(pk) if pk else float("-inf"), 1)),
+                 t("st_rms_v", fmt_db(analysis.to_db(st.rms), 1) if st else pend),
+                 t("st_lufs_v", fmt_db(st.integrated, 1) if st else pend)]
+        if st is None:
+            parts.append(t("st_clip_v", pend))
+        elif st.clipped:
+            parts.append(f"<span style='color:{style.W_CLIP}'>{t('st_clip_v', st.clipped)}</span>")
+        else:
+            parts.append(t("st_clip_v", 0))
+        self.st_stats.setText(" · ".join(parts))
+
+    def statistics_dialog(self) -> None:
+        d = self.doc
+        if d is None:
+            return
+        from .dialogs import StatsDialog
+        if self.stats_dlg is None:
+            self.stats_dlg = StatsDialog(self)
+        self.stats_dlg.show()
+        self.stats_dlg.raise_()
+        self.stats_dlg.refresh()
 
     # ── settings, about, updates ──────────────────────────────
     def settings_dialog(self) -> None:
@@ -1290,6 +1522,9 @@ class MainWindow(QMainWindow):
             if d.dirty and not self._ask_save(d, i):
                 ev.ignore()
                 return
+        self._stats_cancel()
+        if self.stats_dlg is not None:
+            self.stats_dlg.close()
         self.player.stop()
         self.cfg["geometry"] = bytes(self.saveGeometry().toHex()).decode()
         config.save(self.cfg)

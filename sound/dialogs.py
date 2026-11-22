@@ -365,3 +365,311 @@ class UpdateDialog(QDialog):
             return
         self.path = path
         self.accept()
+
+
+# ── 0.2: normalization, trim silence, stereo → mono, statistics ──────────
+def fmt_db(v: float, dec: int = 1) -> str:
+    """−3.2, −∞ (a real minus sign)."""
+    import math
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return "—"
+    if not math.isfinite(v):
+        return "−∞" if v < 0 else "∞"
+    s = f"{v:.{dec}f}"
+    if s.startswith("-"):
+        s = "−" + s[1:]
+        if not s.strip("−0.,"):
+            s = s[1:]                    # −0.0 → 0.0
+    return s
+
+
+class NormalizeDialog(QDialog):
+    """Normalize by the peak (sample or true) or by the loudness (EBU R128 integrated) to a target, with a
+    true-peak ceiling."""
+
+    def __init__(self, cfg: dict, now: str = "", whole: bool = False, parent=None):
+        super().__init__(parent)
+        from . import proc
+        self.cfg = cfg
+        n = cfg.get("normalize") or {}
+        self.setWindowTitle(t("nz_title"))
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.addWidget(_head(t("nz_title")))
+        self.by_peak = QRadioButton(t("nz_peak"))
+        self.by_lufs = QRadioButton(t("nz_lufs"))
+        (self.by_lufs if n.get("mode") == "loudness" else self.by_peak).setChecked(True)
+        lay.addWidget(self.by_peak)
+        f1 = QFormLayout()
+        f1.setContentsMargins(24, 0, 0, 6)
+        self.peak = QDoubleSpinBox()
+        self.peak.setRange(-60, 0)
+        self.peak.setDecimals(2)
+        self.peak.setSingleStep(0.1)
+        self.peak.setValue(float(n.get("peak", -0.1)))
+        f1.addRow(t("nz_peak_to"), self.peak)
+        self.tp = QCheckBox(t("nz_peak_tp"))
+        self.tp.setChecked(bool(n.get("peak_tp", False)))
+        self.tp.toggled.connect(self._units)
+        f1.addRow("", self.tp)
+        lay.addLayout(f1)
+        lay.addWidget(self.by_lufs)
+        f2 = QFormLayout()
+        f2.setContentsMargins(24, 0, 0, 6)
+        self.target = QComboBox()
+        for v, key in zip(proc.LUFS_TARGETS, ("nz_t23", "nz_t16", "nz_t14")):
+            self.target.addItem(t(key), v)
+        self.target.addItem(t("nz_custom"), None)
+        self.custom = QDoubleSpinBox()
+        self.custom.setRange(-60, 0)
+        self.custom.setDecimals(1)
+        self.custom.setSingleStep(0.5)
+        self.custom.setSuffix(" LUFS")
+        tv = n.get("target", -23.0)
+        i = self.target.findData(tv)
+        if i < 0:
+            i = self.target.count() - 1
+            self.custom.setValue(float(tv))
+        else:
+            self.custom.setValue(-18.0)
+        self.target.setCurrentIndex(i)
+        self.target.currentIndexChanged.connect(lambda _i: self._enable())
+        f2.addRow(t("nz_target"), self.target)
+        f2.addRow(t("nz_custom_value"), self.custom)
+        self.ceiling = QDoubleSpinBox()
+        self.ceiling.setRange(-20, 0)
+        self.ceiling.setDecimals(1)
+        self.ceiling.setSingleStep(0.5)
+        self.ceiling.setSuffix(" dBTP")
+        self.ceiling.setValue(float(n.get("ceiling", -1.0)))
+        f2.addRow(t("nz_ceiling"), self.ceiling)
+        lay.addLayout(f2)
+        notes = [x for x in (now, t("p_whole") if whole else "") if x]
+        lay.addWidget(_hint(t("nz_note")))
+        if notes:
+            self.now = _hint("\n".join(notes))
+            lay.addWidget(self.now)
+        lay.addWidget(_buttons(self))
+        self.by_peak.toggled.connect(lambda _c: self._enable())
+        self._units()
+        self._enable()
+
+    def _units(self) -> None:
+        self.peak.setSuffix(" dBTP" if self.tp.isChecked() else " dBFS")
+
+    def _enable(self) -> None:
+        p = self.by_peak.isChecked()
+        self.peak.setEnabled(p)
+        self.tp.setEnabled(p)
+        for w in (self.target, self.ceiling):
+            w.setEnabled(not p)
+        self.custom.setEnabled(not p and self.target.currentData() is None)
+
+    def mode(self) -> str:
+        return "peak" if self.by_peak.isChecked() else "loudness"
+
+    def lufs_target(self) -> float:
+        v = self.target.currentData()
+        return float(self.custom.value() if v is None else v)
+
+    def settings(self) -> dict:
+        """The choice, also what cfg["normalize"] keeps."""
+        return {"mode": self.mode(), "peak": self.peak.value(), "peak_tp": self.tp.isChecked(),
+                "target": self.lufs_target(), "ceiling": self.ceiling.value()}
+
+
+class StatsDialog(QDialog):
+    """Tools → Statistics: a table per channel and for the whole (peak, true peak, min / max, RMS, DC offset,
+    clipped samples) and the loudness (integrated, LRA, max momentary / short-term). Works on the window's current
+    file and selection; «Refresh» measures again — in a thread, with a progress bar and Cancel."""
+    finished_ = Signal(object, object, object, str)   # run, key, Stats, error ("" / "cancel" / text)
+    progress_ = Signal(float)
+
+    ROWS = ("st_peak", "st_tp", "st_min", "st_max", "st_rms", "st_dc", "st_clipped")
+    UNITS = ("dBFS", "dBTP", "", "", "dBFS", "%", "")
+
+    def __init__(self, window):
+        super().__init__(window)
+        from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget
+        self.win = window
+        self.key = None
+        self.prog = None
+        self.run = 0
+        self.setWindowTitle(t("stats_title"))
+        self.setModal(False)
+        self.resize(640, 520)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.addWidget(_head(t("stats_title")))
+        self.what = _hint("")
+        lay.addWidget(self.what)
+        self.table = QTableWidget(len(self.ROWS), 1)
+        self.table.setObjectName("stats")
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.ContiguousSelection)
+        self.table.setWordWrap(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setVerticalHeaderLabels([f"{t(k)}, {u}" if u else t(k) for k, u in zip(self.ROWS, self.UNITS)])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setMinimumSectionSize(64)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.setSizeAdjustPolicy(QAbstractItemView.AdjustToContents)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        from PySide6.QtWidgets import QSizePolicy
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        lay.addWidget(self.table)
+        cap = QLabel(t("stats_loudness"))
+        cap.setObjectName("caption")
+        lay.addWidget(cap)
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        self.loud = {}
+        for k in ("st_integrated", "st_lra", "st_momentary", "st_short", "st_threshold"):
+            lab = QLabel("—")
+            lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.loud[k] = lab
+            form.addRow(t(k), lab)
+        lay.addLayout(form)
+        lay.addWidget(_hint(t("stats_note")))
+        lay.addStretch(1)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.hide()
+        lay.addWidget(self.bar)
+        bb = QDialogButtonBox()
+        self.refresh_b = bb.addButton(t("stats_refresh"), QDialogButtonBox.ActionRole)
+        self.refresh_b.setObjectName("primary")
+        self.cancel_b = bb.addButton(t("cancel"), QDialogButtonBox.ActionRole)
+        self.cancel_b.hide()
+        close = bb.addButton(t("close"), QDialogButtonBox.RejectRole)
+        self.refresh_b.clicked.connect(self.refresh)
+        self.cancel_b.clicked.connect(self.cancel)
+        close.clicked.connect(self.close)
+        lay.addWidget(bb)
+        self.finished_.connect(self._done)
+        self.progress_.connect(lambda f: self.bar.setValue(int(f * 1000)))
+
+    def refresh(self) -> None:
+        """Measure the window's current file / selection (or show the cached result)."""
+        import threading
+        from . import analysis, media
+        self.cancel()
+        self.run += 1
+        self._idle()
+        d = self.win.doc
+        if d is None or d.frames <= 0:
+            self.key = None
+            self.what.setText(t("stats_nothing"))
+            self._fill(None)
+            return
+        a, b = d.sel if d.sel else (0, d.frames)
+        self.key = self.win.stats_key(d, a, b)
+        rng = t("stats_sel", fmt_time(a, d.rate), fmt_time(b, d.rate), fmt_time(b - a, d.rate)) if d.sel else \
+            t("stats_whole", fmt_time(d.frames, d.rate))
+        self.what.setText(f"{d.name} · {rng}")
+        st = self.win.stats_cache.get(self.key)
+        if st is not None and st.has_true_peak:
+            self._fill(st)
+            return
+        self._fill(None, d.labels)
+        self.prog = media.Progress(lambda f: self.progress_.emit(f))
+        self.run += 1
+        prog, key, run = self.prog, self.key, self.run
+        self.bar.setValue(0)
+        self.bar.show()
+        self.cancel_b.show()
+        self.refresh_b.setEnabled(False)
+
+        def work():
+            try:
+                self.finished_.emit(run, key, analysis.analyze(d, a, b, prog), "")
+            except media.Cancelled:
+                self.finished_.emit(run, key, None, "cancel")
+            except Exception as e:                          # the file was closed meanwhile, …
+                self.finished_.emit(run, key, None, str(e) or type(e).__name__)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _idle(self) -> None:
+        self.bar.hide()
+        self.cancel_b.hide()
+        self.refresh_b.setEnabled(True)
+
+    def cancel(self) -> None:
+        if self.prog is not None:
+            self.prog.cancel()
+            self.prog = None
+
+    def _done(self, run, key, st, err: str) -> None:
+        if st is not None:
+            self.win.stats_store(key, st)
+        if run != self.run:
+            return
+        self.prog = None
+        self._idle()
+        if st is not None:
+            self._fill(st)
+        elif err and err != "cancel":
+            self.what.setText(t("op_failed", err))
+
+    def _fill(self, st, labels=None) -> None:
+        from PySide6.QtWidgets import QTableWidgetItem
+        from . import analysis
+        chans = st.channels if st is not None else []
+        labels = [c.label for c in chans] if st is not None else list(labels or [])
+        cols = labels + ([t("stats_all")] if len(labels) > 1 else [])
+        self.table.setColumnCount(max(1, len(cols)))
+        self.table.setHorizontalHeaderLabels(cols or [""])
+        from PySide6.QtWidgets import QHeaderView
+        hh = self.table.horizontalHeader()
+        for c in range(self.table.columnCount()):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeToContents if c == len(labels) else QHeaderView.Stretch)
+        db = analysis.to_db
+        for c in range(self.table.columnCount()):
+            if st is None:
+                vals = ["…" if labels else "—"] * len(self.ROWS)
+            else:
+                if c < len(chans):
+                    x = chans[c]
+                    pk, tp, mn, mx, rms, dc, cl = x.peak, x.true_peak, x.min, x.max, x.rms, x.dc, x.clipped
+                else:
+                    pk, tp, rms, cl = st.peak, st.true_peak, st.rms, st.clipped
+                    mn = min(x.min for x in chans)
+                    mx = max(x.max for x in chans)
+                    dc = None
+                vals = [fmt_db(db(pk), 2), fmt_db(db(tp), 2), fmt_db(mn, 4), fmt_db(mx, 4), fmt_db(db(rms), 2),
+                        "—" if dc is None else fmt_db(dc * 100, 3), f"{cl:,}".replace(",", " ")]
+            for r, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if r == 6 and st is not None and v != "0":
+                    it.setForeground(style.qcolor(style.W_CLIP))
+                self.table.setItem(r, c, it)
+        self.table.clearSelection()
+        if st is None:
+            for lab in self.loud.values():
+                lab.setText("…" if labels else "—")
+            return
+        self.loud["st_integrated"].setText(f"{fmt_db(st.integrated)} LUFS")
+        self.loud["st_lra"].setText(f"{fmt_db(st.lra)} LU")
+        self.loud["st_momentary"].setText(f"{fmt_db(st.momentary_max)} LUFS")
+        self.loud["st_short"].setText(f"{fmt_db(st.short_term_max)} LUFS")
+        self.loud["st_threshold"].setText(f"{fmt_db(st.threshold)} LUFS")
+
+    def values(self) -> dict:
+        """The table as text (tests): {(row key, column header): text} + the loudness rows."""
+        out = {}
+        for c in range(self.table.columnCount()):
+            h = self.table.horizontalHeaderItem(c).text()
+            for r, k in enumerate(self.ROWS):
+                it = self.table.item(r, c)
+                out[(k, h)] = it.text() if it else ""
+        for k, lab in self.loud.items():
+            out[k] = lab.text()
+        return out
+
+    def closeEvent(self, ev) -> None:
+        self.cancel()
+        super().closeEvent(ev)
