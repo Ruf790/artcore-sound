@@ -496,7 +496,8 @@ class NoiseGraph(_Plot):
 # ── the window of an effect ───────────────────────────────────
 class EffectDialog(QDialog):
     """One effect over [a, b) of the window's document (the selection, or the whole file)."""
-    scanned = Signal(object, int)                      # clicks found (frames), run
+    scanned = Signal(object, int)                      # clicks found (frames) or the clipping scan (a dict), run
+    detected = Signal(object, int)                     # 2.0: the hum found (a dict), run
 
     def __init__(self, win, key: str, d, a: int, b: int, whole: bool, batch: dict | None = None):
         """batch (1.0): the dialog edits a step of a batch — {"values": …, "file": the name of the file previewed
@@ -525,7 +526,8 @@ class EffectDialog(QDialog):
         self.marks: list = []
         self._scan_run = 0
         self.setWindowTitle(t(self.eff.name))
-        self.setMinimumWidth({"eq": 980, "geq": 760, "comp": 940, "limit": 800, "nr": 760}.get(key, 700))
+        self.setMinimumWidth({"eq": 980, "geq": 760, "comp": 940, "limit": 800, "nr": 760, "deess": 800,
+                              "declip": 760}.get(key, 700))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(8)
@@ -588,7 +590,10 @@ class EffectDialog(QDialog):
         self.debounce.setInterval(400)
         self.debounce.timeout.connect(self._rerender)
         self.scanned.connect(self._scanned)
+        self.detected.connect(self._detected)
         self._sync()
+        if key == "dehum" and batch is None and d.frames:
+            self._detect_hum()
 
     # ── building ──────────────────────────────────────────────
     def _row(self, key: str, vertical: bool = False) -> ParamRow:
@@ -660,7 +665,7 @@ class EffectDialog(QDialog):
                 h.addLayout(col)
             v.addLayout(h)
             v.addLayout(self._form(["out"]))
-        elif k in ("comp", "limit"):
+        elif k in ("comp", "limit", "deess"):
             h = QHBoxLayout()
             keys = [p.key for p in self.eff.params]
             h.addLayout(self._form(keys), 1)
@@ -710,10 +715,26 @@ class EffectDialog(QDialog):
                     grid.addWidget(w, o + 1, i + 1)
             v.addLayout(grid)
             v.addLayout(self._form(["normalize"]))
-        elif k == "declick":
+        elif k == "dehum":                             # 2.0
             v.addLayout(self._form([p.key for p in self.eff.params]))
             row = QHBoxLayout()
-            self.b_find = QPushButton(style.icon("fa6s.magnifying-glass"), t("dc_find"))
+            self.b_detect = QPushButton(style.icon("fa6s.magnifying-glass"), t("dh_detect"))
+            self.b_detect.clicked.connect(self._detect_hum)
+            row.addWidget(self.b_detect)
+            self.hum_label = QLabel("")
+            self.hum_label.setWordWrap(True)
+            row.addWidget(self.hum_label, 1)
+            self.hum_now = QLabel("")
+            self.hum_now.setObjectName("hint")
+            row.addWidget(self.hum_now)
+            v.addLayout(row)
+            if self.batch is not None:
+                self.b_detect.hide()
+        elif k in ("declick", "declip"):
+            v.addLayout(self._form([p.key for p in self.eff.params]))
+            row = QHBoxLayout()
+            self.b_find = QPushButton(style.icon("fa6s.magnifying-glass"),
+                                      t("dc_find" if k == "declick" else "cl_find"))
             self.b_find.clicked.connect(self._find_clicks)
             row.addWidget(self.b_find)
             self.found = QLabel("")
@@ -725,6 +746,8 @@ class EffectDialog(QDialog):
             v.addLayout(self._form([p.key for p in self.eff.params]))
             if k == "reverb":
                 v.addWidget(self._hint(t("rv_note")))
+            if k in ("nr_auto", "decrackle"):
+                v.addWidget(self._hint(t("na_note" if k == "nr_auto" else "cr_note")))
             if k == "tempo":
                 from .fx import tempo as tm
                 self.len_label = QLabel("")
@@ -908,6 +931,8 @@ class EffectDialog(QDialog):
                 on = v[f"b{i}_on"]
                 for s in ("type", "freq", "gain", "q"):
                     self.rows[f"b{i}_{s}"].setEnabled(on and not (s == "gain" and v[f"b{i}_type"] in ("hp", "lp")))
+        if self.key == "declip":
+            self.rows["threshold"].setEnabled(not v["auto"])
         if self.key == "tempo":
             n = self.b - self.a
             self.len_label.setText(t("tp_length", fmt_time(n, self.d.rate),
@@ -1026,8 +1051,13 @@ class EffectDialog(QDialog):
                 self.status.setText(t("fx_preparing", int(rp.frac * 100)))
         if self.chain is not None and self.chain.error:
             self.status.setText(t("fx_failed", self.chain.error))
-        if self.key == "declick" and not self.b_find.isEnabled():
-            self.found.setText(t("dc_searching", int(getattr(self, "_scan_frac", 0.0) * 100)))
+        if self.key in ("declick", "declip") and not self.b_find.isEnabled():
+            self.found.setText(t("dc_searching" if self.key == "declick" else "cl_searching",
+                                 int(getattr(self, "_scan_frac", 0.0) * 100)))
+        if self.key == "dehum":
+            proc = self.chain.proc if self.chain is not None else None
+            f0 = proc.f0 if proc is not None and proc.f0 > 0 else 0.0
+            self.hum_now.setText(t("dh_following", f"{f0:.2f}") if f0 else "")
         if self.b_preview.isChecked() and self.chain is not None and self.win.player.state != "play":
             self.stop_preview()
 
@@ -1039,25 +1069,64 @@ class EffectDialog(QDialog):
         vals = dict(self.values)
         d, a, b = self.d, self.a, self.b
         self.b_find.setEnabled(False)
-        self.found.setText(t("dc_searching", 0))
+        clip = self.key == "declip"
+        self.found.setText(t("cl_searching" if clip else "dc_searching", 0))
         prog = Progress(lambda f: setattr(self, "_scan_frac", f))
         self._scan_frac = 0.0
 
         def work():
             try:
-                marks = fx.scan_clicks(d, a, b, vals, prog)
+                res = fx.scan_clips(d, a, b, vals, prog) if clip else fx.scan_clicks(d, a, b, vals, prog)
             except Exception:                              # noqa: BLE001
-                marks = []
-            self.scanned.emit(marks, run)
+                res = {"marks": [], "runs": 0} if clip else []
+            self.scanned.emit(res, run)
         threading.Thread(target=work, daemon=True).start()
 
-    def _scanned(self, marks, run) -> None:
+    def _scanned(self, res, run) -> None:
         if run != self._scan_run:
             return
-        self.marks = list(marks)
         self.b_find.setEnabled(True)
-        self.found.setText(t("dc_found", len(self.marks)))
+        if isinstance(res, dict):                          # 2.0: the clipping
+            self.marks = list(res["marks"])
+            self.scan_result = res
+            if not res["runs"]:
+                self.found.setText(t("cl_none"))
+            else:
+                ms = res["frames"] / max(1, self.d.channels) / self.d.rate * 1000
+                text = t("cl_found", res["runs"], f"{ms:.0f}", f"{res['peak_db']:+.1f}")
+                if res["need_db"] > self.values["headroom"]:
+                    text += " " + t("cl_need", f"{res['need_db']:.1f}")
+                self.found.setText(text)
+        else:
+            self.marks = list(res)
+            self.found.setText(t("dc_found", len(self.marks)))
         self.win.wave.set_marks(self.d, self.marks)
+
+    # ── the hum (2.0) ─────────────────────────────────────────
+    def _detect_hum(self) -> None:
+        self._hum_run = getattr(self, "_hum_run", 0) + 1
+        run = self._hum_run
+        d, a, b = self.d, self.a, self.b
+        self.b_detect.setEnabled(False)
+
+        def work():
+            try:
+                res = fx.detect_hum(d, a, b)
+            except Exception:                              # noqa: BLE001
+                res = {"f0": 0.0}
+            self.detected.emit(res, run)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _detected(self, res, run) -> None:
+        if run != getattr(self, "_hum_run", 0):
+            return
+        self.b_detect.setEnabled(True)
+        self.hum_result = res
+        if res.get("f0"):
+            self.hum_label.setText(t("dh_found", f"{res['f0']:.2f}", f"{res['base']:.0f}",
+                                     f"{res['prominence']:.0f}"))
+        else:
+            self.hum_label.setText(t("dh_none"))
 
     # ── the result ────────────────────────────────────────────
     def result_values(self) -> dict:

@@ -36,7 +36,8 @@ NOISE_EXT = ".acnoise"
 
 # ── the steps ─────────────────────────────────────────────────
 PROCESS_STEPS = ("gain", "normalize", "dc", "trim_silence", "fades", "channels", "rate")
-FX_STEPS = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick", "chmatrix", "dialog")
+FX_STEPS = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick", "chmatrix", "dialog",
+            "nr_auto", "decrackle", "declip", "dehum", "deess")
 STEP_KINDS = PROCESS_STEPS + FX_STEPS
 STEP_TITLES = {"gain": "p_gain", "normalize": "p_normalize", "dc": "p_dc", "trim_silence": "p_trim_silence",
                "fades": "bs_fades", "channels": "p_channels", "rate": "p_resample"}

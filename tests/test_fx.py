@@ -92,6 +92,11 @@ VALUES = {
     "reverb": {"size": 40.0, "decay": 1.2, "predelay": 13.0, "damping": 50.0, "width": 70.0, "mix": 40.0},
     "nr": {"reduction": 18.0, "attack": 20.0},
     "declick": {"sensitivity": 60.0},
+    "nr_auto": {"reduction": 18.0, "mode": "music"},
+    "decrackle": {"sensitivity": 80.0},
+    "declip": {"auto": False, "threshold": -9.0, "min_len": 2},
+    "dehum": {"base": "50", "harmonics": 20},
+    "deess": {"freq": 3000.0, "threshold": -40.0},
 }
 
 

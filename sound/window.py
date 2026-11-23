@@ -354,12 +354,19 @@ class MainWindow(QMainWindow, FilmCommands):
         self.a_to_stereo = next(a for a in self.proc_actions if a.objectName() == "p_to_stereo")
         m = mb.addMenu(t("m_effects"))
         self.fx_actions = {}
-        for key, icon in (("eq", "fa6s.sliders"), ("geq", "fa6s.chart-column"), (None, None),
-                          ("comp", "fa6s.compress"), ("limit", "fa6s.arrows-down-to-line"), (None, None),
-                          ("delay", "fa6s.clone"), ("reverb", "fa6s.church"), (None, None),
-                          ("tempo", "fa6s.gauge-high"), (None, None),
-                          ("take_noise", "fa6s.eye-dropper"), ("nr", "fa6s.wand-magic-sparkles"),
-                          ("declick", "fa6s.bolt")):
+        effects = (("eq", "fa6s.sliders"), ("geq", "fa6s.chart-column"), (None, None),
+                   ("comp", "fa6s.compress"), ("limit", "fa6s.arrows-down-to-line"), (None, None),
+                   ("delay", "fa6s.clone"), ("reverb", "fa6s.church"), (None, None),
+                   ("tempo", "fa6s.gauge-high"))
+        restore = (("take_noise", "fa6s.eye-dropper"), ("nr", "fa6s.wand-magic-sparkles"),         # 2.0: a menu
+                   ("nr_auto", "fa6s.wand-magic"), (None, None),
+                   ("declick", "fa6s.bolt"), ("decrackle", "fa6s.record-vinyl"), ("declip", "fa6s.scissors"), (None, None),
+                   ("dehum", "fa6s.plug-circle-xmark"), ("deess", "fa6s.wind"))
+        for key, icon in effects + (("menu", None),) + restore:
+            if key == "menu":
+                m = mb.addMenu(t("m_restore"))
+                self.restore_menu = m
+                continue
             if key is None:
                 m.addSeparator()
                 continue
@@ -1321,6 +1328,8 @@ class MainWindow(QMainWindow, FilmCommands):
             proc = info.get("proc")
             if key == "declick" and proc is not None:
                 self._toast(t("declick_done", proc.found))
+            elif key in ("declip", "decrackle") and proc is not None:
+                self._toast(t(key + "_done", proc.found))
         if not had_sel:
             self._toast(t("p_whole"))
         self._make_room(d, b - a)

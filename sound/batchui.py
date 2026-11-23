@@ -21,7 +21,9 @@ STEP_ICONS = {"gain": "fa6s.volume-high", "normalize": "fa6s.chart-simple", "dc"
               "channels": "fa6s.code-branch", "rate": "fa6s.gauge", "eq": "fa6s.sliders", "geq": "fa6s.chart-column",
               "comp": "fa6s.compress", "limit": "fa6s.arrows-down-to-line", "delay": "fa6s.clone",
               "reverb": "fa6s.church", "tempo": "fa6s.gauge-high", "nr": "fa6s.wand-magic-sparkles",
-              "declick": "fa6s.bolt", "chmatrix": "fa6s.table-cells", "dialog": "fa6s.comment"}
+              "declick": "fa6s.bolt", "chmatrix": "fa6s.table-cells", "dialog": "fa6s.comment",
+              "nr_auto": "fa6s.wand-magic", "decrackle": "fa6s.record-vinyl", "declip": "fa6s.scissors",
+              "dehum": "fa6s.plug-circle-xmark", "deess": "fa6s.wind"}
 STATUS_COLORS = {"ok": "#3fb27f", "error": "#e5534b", "skip": "#c69026", "cancel": "#8b949e", "run": "#4c9aff"}
 COLS = ("n", "file", "status", "progress", "lufs", "peak", "time", "note")
 
@@ -395,8 +397,13 @@ class BatchWindow(QDialog):
         menu.addSection(t("m_process"))
         for k in batch.PROCESS_STEPS:
             menu.addAction(style.icon(STEP_ICONS[k]), batch.Step(k).title(), lambda k=k: self._add_step(k))
+        from .fx import RESTORE
         menu.addSection(t("m_effects"))
         for k in batch.FX_STEPS:
+            if k not in RESTORE:
+                menu.addAction(style.icon(STEP_ICONS[k]), batch.Step(k).title(), lambda k=k: self._add_step(k))
+        menu.addSection(t("m_restore"))                  # 2.0
+        for k in RESTORE:
             menu.addAction(style.icon(STEP_ICONS[k]), batch.Step(k).title(), lambda k=k: self._add_step(k))
         self.b_add.setMenu(menu)
         col.addWidget(self.b_add)
