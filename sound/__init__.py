@@ -1,7 +1,7 @@
 """ArtCore Sound — an audio editor for Windows: waveform per channel, editing with unlimited undo kept on disk,
 processing, effects and analysis; files opened and saved through FFmpeg, playback through PortAudio (WASAPI)."""
-VERSION_TUPLE = (0, 3, 0, 0)
-VERSION       = "0.3.0"
+VERSION_TUPLE = (0, 4, 0, 0)
+VERSION       = "0.4.0"
 APP_TITLE     = "ArtCore Sound"
 APP_ID        = "ArtCore.Sound"
 REPO          = "Ruf790/artcore-sound"

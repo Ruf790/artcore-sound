@@ -34,6 +34,15 @@ DEFAULTS = {
     "fx_last":       {},            # effect key → the values last applied
     "fx_presets":    {},            # effect key → {name: values} (the user's own presets)
     "fx_keep_tail":  True,          # delay / reverb: ring on past the selection
+    # analysis, markers, recording (0.4)
+    "view_mode":     "wave",        # wave | spec | both
+    "spectrogram":   {},            # spectrogram.Settings
+    "spectrum":      {},            # spectrum.Settings of Tools → Spectrum
+    "spectrum_panel": {},           # … of the panel at the bottom
+    "spectrum_panel_on": True,
+    "side_split":    [],            # the meters / the marker list
+    "record":        {},            # the Record window: device, channels, rate, pre-roll, trigger
+    "markers_dir":   "",
 }
 
 RECENT_MAX = 12
@@ -108,7 +117,10 @@ def load() -> dict:
     if not isinstance(cfg.get("recent"), list):
         cfg["recent"] = []
     cfg["recent"] = [p for p in cfg["recent"] if isinstance(p, str)][:RECENT_MAX]
-    for k in ("save_opts", "fx_last", "fx_presets"):
+    if cfg.get("view_mode") not in ("wave", "spec", "both"):
+        cfg["view_mode"] = "wave"
+    cfg["spectrum_panel_on"] = bool(cfg.get("spectrum_panel_on"))
+    for k in ("save_opts", "fx_last", "fx_presets", "spectrogram", "spectrum", "spectrum_panel", "record"):
         if not isinstance(cfg.get(k), dict):
             cfg[k] = {}
     cfg["fx_keep_tail"] = bool(cfg.get("fx_keep_tail"))

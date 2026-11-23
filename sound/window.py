@@ -1,6 +1,9 @@
 """The main window: menus, the tool bar, a tab per open file, the overview strip, the waveform with the level meters
 beside it, the transport (play cursor counter, selection fields, format) and the status bar. Long jobs (opening,
-saving, effects) run in a thread with a progress bar and Cancel in the status bar."""
+saving, effects) run in a thread with a progress bar and Cancel in the status bar.
+
+0.4: the spectrum panel under the waveform, the view modes (wave / spectrogram / both), the Markers menu and the list
+of markers and regions under the meters, the Record window behind the transport's red button."""
 from __future__ import annotations
 
 import os
@@ -9,19 +12,22 @@ import time
 
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
-                               QMessageBox, QProgressBar, QScrollBar, QSplitter, QTabBar,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressBar, QScrollBar, QSplitter,
+                               QTabBar, QToolButton, QVBoxLayout, QWidget)
 
 from . import APP_TITLE, AUDIO_EXT, VERSION, VIDEO_EXT, analysis, config, ff, media, proc, style, winint
+from . import spectrogram as sgm
 from .doc import Document, fmt_time, parse_time
 from .i18n import fmt_bytes, t
 from .player import Player
 from .waveview import Meters, Overview, WaveView
 
-UNDO_KEYS = {"open", "new", "cut", "paste", "delete", "silence", "insert silence", "trim"}
+UNDO_KEYS = {"open", "new", "cut", "paste", "delete", "silence", "insert silence", "trim", "add marker", "add region",
+             "move marker", "rename marker", "delete marker", "markers", "record"}
 STATS_DELAY = 300            # ms after the last change of the selection before the status bar measures it
 STATS_CACHE = 64
+MODE_ICONS = {"wave": "fa6s.wave-square", "spec": "fa6s.fire", "both": "fa6s.layer-group"}
 
 
 class Bridge(QObject):
@@ -53,6 +59,9 @@ class MainWindow(QMainWindow):
         self._stats_timer.setInterval(STATS_DELAY)
         self._stats_timer.timeout.connect(self._stats_start)
         self.stats_dlg = None
+        self.spectrum_dlg = None
+        self.rec_dlg = None
+        self._recorded = 0
         self.fx_dlg = None                      # the effect window while it is open
         self.job = None                         # (label, Progress) while a long job runs
         self._job_doc = None
@@ -89,7 +98,11 @@ class MainWindow(QMainWindow):
         return a
 
     def _build(self) -> None:
+        from .anaui import SpectrumPanel
+        from .markui import MarkerList
         self.wave = WaveView()
+        self.wave.set_sg_settings(sgm.Settings.from_dict(self.cfg.get("spectrogram")))
+        self.wave.set_mode(self.cfg.get("view_mode", "wave"))
         self.overview = Overview(self.wave)
         self.setMenuBar(self._build_menu())
         central = QWidget()
@@ -120,21 +133,46 @@ class MainWindow(QMainWindow):
         lv.addWidget(self.wave, 1)
         self.hbar = QScrollBar(Qt.Horizontal)
         lv.addWidget(self.hbar)
+        self.spec_panel = SpectrumPanel(self)
+        self.spec_panel.closeRequested.connect(lambda: self.show_spectrum_panel(False))
+        self.spec_panel.windowRequested.connect(self.spectrum_dialog)
+        lv.addWidget(self.spec_panel)
+        self.spec_panel.setVisible(bool(self.cfg.get("spectrum_panel_on", True)))
         mid.addWidget(left)
         right = QWidget()
         right.setObjectName("sidePanel")
         rv = QVBoxLayout(right)
-        rv.setContentsMargins(6, 6, 6, 6)
-        rv.setSpacing(4)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+        side = QSplitter(Qt.Vertical)
+        side.setChildrenCollapsible(False)
+        box = QWidget()
+        bv = QVBoxLayout(box)
+        bv.setContentsMargins(6, 6, 6, 4)
+        bv.setSpacing(4)
         cap = QLabel(t("meters"))
         cap.setObjectName("caption")
-        rv.addWidget(cap)
+        bv.addWidget(cap)
         self.meters = Meters()
-        rv.addWidget(self.meters, 1)
+        bv.addWidget(self.meters, 1)
+        side.addWidget(box)
+        box = QWidget()
+        bv = QVBoxLayout(box)
+        bv.setContentsMargins(6, 4, 6, 6)
+        bv.setSpacing(4)
+        cap = QLabel(t("mk_list"))
+        cap.setObjectName("caption")
+        bv.addWidget(cap)
+        self.mlist = MarkerList()
+        bv.addWidget(self.mlist, 1)
+        side.addWidget(box)
+        side.setSizes(self.cfg.get("side_split") or [420, 300])
+        self.side_split = side
+        rv.addWidget(side)
         mid.addWidget(right)
         mid.setStretchFactor(0, 1)
         mid.setStretchFactor(1, 0)
-        mid.setSizes([1200, 170])
+        mid.setSizes([1080, 330])
         self.splitter = mid
         root.addWidget(mid, 1)
         root.addWidget(self._build_transport())
@@ -145,6 +183,11 @@ class MainWindow(QMainWindow):
         self.wave.seekRequested.connect(self._on_seek)
         self.wave.contextRequested.connect(self._context_menu)
         self.wave.filesDropped.connect(self.open_paths)
+        self.wave.markerMoved.connect(self._marker_moved)
+        self.wave.markerRename.connect(self.rename_marker)
+        self.mlist.activated.connect(self.goto_marker)
+        self.mlist.renamed.connect(lambda mid, name: self._rename(mid, name))
+        self.mlist.deleteRequested.connect(self.delete_markers)
         self.overview.scrollRequested.connect(lambda f: self.wave.scroll_to(f - (self.wave.visible()[1] -
                                                                                    self.wave.visible()[0]) / 2))
         self.hbar.valueChanged.connect(self._on_hbar)
@@ -171,6 +214,7 @@ class MainWindow(QMainWindow):
         self.a_save = A(m, "fa6s.floppy-disk", t("save"), self.save, "Ctrl+S")
         self.a_save_as = A(m, "fa6s.file-export", t("save_as") + "…", self.save_as, "Ctrl+Shift+S")
         self.a_save_sel = A(m, "fa6s.scissors", t("save_sel") + "…", lambda: self.save_as(selection=True))
+        self.a_save_regions = A(m, "fa6s.layer-group", t("mk_save_regions") + "…", self.save_regions_dialog)
         m.addSeparator()
         self.a_show = A(m, "fa6s.folder", t("show_file"), self._show_file)
         m.addSeparator()
@@ -196,6 +240,27 @@ class MainWindow(QMainWindow):
         self.a_sel_none = A(m, "", t("select_none"), self.select_none, "Esc")
         self.a_sel_start = A(m, "", t("select_to_start"), lambda: self._select_to(0), "Shift+Home")
         self.a_sel_end = A(m, "", t("select_to_end"), lambda: self._select_to(None), "Shift+End")
+        m = mb.addMenu(t("m_markers"))
+        self.mk_actions = {}
+        for key, icon, text, slot, keys in (
+                ("add", "fa6s.flag", t("mk_add"), self.add_marker, "M"),
+                ("region", "fa6s.arrows-left-right-to-line", t("mk_add_region"), self.add_region, "R"),
+                (None, None, None, None, None),
+                ("prev", "fa6s.backward-step", t("mk_prev"), lambda: self.jump_marker(-1), "Ctrl+Left"),
+                ("next", "fa6s.forward-step", t("mk_next"), lambda: self.jump_marker(1), "Ctrl+Right"),
+                (None, None, None, None, None),
+                ("rename", "fa6s.pen", t("mk_rename") + "…", lambda: self.rename_marker(None), None),
+                ("delete", "fa6s.trash-can", t("mk_delete"), lambda: self.delete_markers(None), None),
+                ("delete_all", "", t("mk_delete_all"), self.delete_all_markers, None),
+                (None, None, None, None, None),
+                ("import", "fa6s.file-import", t("mk_import") + "…", self.import_markers, None),
+                ("export", "fa6s.file-export", t("mk_export") + "…", self.export_markers, None)):
+            if key is None:
+                m.addSeparator()
+                continue
+            self.mk_actions[key] = A(m, icon, text, slot, keys)
+        m.addSeparator()
+        m.addAction(self.a_save_regions)
         m = mb.addMenu(t("m_view"))
         self.a_zoom_in = A(m, "fa6s.magnifying-glass-plus", t("zoom_in"), lambda: self.wave.zoom(0.5), ["Up", "Ctrl+="])
         self.a_zoom_out = A(m, "fa6s.magnifying-glass-minus", t("zoom_out"), lambda: self.wave.zoom(2.0),
@@ -203,6 +268,20 @@ class MainWindow(QMainWindow):
         self.a_zoom_all = A(m, "fa6s.expand", t("zoom_all"), self.wave.zoom_all, "Ctrl+Up")
         self.a_zoom_sel = A(m, "fa6s.arrows-left-right", t("zoom_sel"), self._zoom_sel, "Ctrl+Down")
         self.a_zoom_smp = A(m, "fa6s.wave-square", t("zoom_samples"), self.wave.zoom_samples, "Ctrl+Shift+Up")
+        m.addSeparator()
+        vm = m.addMenu(style.icon("fa6s.chart-area"), t("vm_mode"))
+        grp = QActionGroup(self)
+        self.mode_actions = {}
+        for k, keys in (("wave", "Alt+1"), ("spec", "Alt+2"), ("both", "Alt+3")):
+            a = A(vm, MODE_ICONS[k], t("vm_" + k), lambda k=k: self.set_view_mode(k), keys)
+            a.setCheckable(True)
+            a.setChecked(self.cfg.get("view_mode", "wave") == k)
+            grp.addAction(a)
+            self.mode_actions[k] = a
+        self.a_sg_settings = A(m, "fa6s.palette", t("sgd_title") + "…", self.spectrogram_dialog)
+        self.a_spec_panel = A(m, "fa6s.chart-line", t("sp_panel"), lambda: self.show_spectrum_panel(None), "F6")
+        self.a_spec_panel.setCheckable(True)
+        self.a_spec_panel.setChecked(bool(self.cfg.get("spectrum_panel_on", True)))
         m.addSeparator()
         self.a_follow = A(m, "", t("follow"), self._toggle_follow)
         self.a_follow.setCheckable(True)
@@ -268,6 +347,10 @@ class MainWindow(QMainWindow):
             self.fx_actions[key] = act
         m = mb.addMenu(t("m_tools"))
         self.a_stats = A(m, "fa6s.table-list", t("stats") + "…", self.statistics_dialog, "Ctrl+I")
+        self.a_spectrum = A(m, "fa6s.chart-line", t("sp_title") + "…", self.spectrum_dialog, "Ctrl+Shift+F")
+        m.addSeparator()
+        self.a_sg_mode = A(m, "fa6s.chart-area", t("sg_toggle"), self._toggle_spectrogram, "F7")
+        m.addAction(self.a_sg_settings)
         m = mb.addMenu(t("m_transport"))
         self.a_play = A(m, "fa6s.play", t("play"), self.play_toggle, "Space")
         self.a_play_all = A(m, "fa6s.circle-play", t("play_all"), self.play_all, "Shift+Space")
@@ -276,6 +359,8 @@ class MainWindow(QMainWindow):
         self.a_loop = A(m, "fa6s.repeat", t("loop"), self._toggle_loop, "Q")
         self.a_loop.setCheckable(True)
         self.a_loop.setChecked(self.cfg.get("loop", False))
+        m.addSeparator()
+        self.a_record = A(m, "fa6s.circle", t("record") + "…", self.record_toggle, "Ctrl+R")
         return mb
 
     def _tool(self, icon: str, tip: str, slot, text: str = "", checkable: bool = False) -> QToolButton:
@@ -334,6 +419,25 @@ class MainWindow(QMainWindow):
                                           ("nr", "fa6s.wand-magic-sparkles", t("tb_nr"), t("tb_nr_tip"), "nr")):
             self.tb["fx_" + key] = T(icon, tip, lambda k=fxk: self.effect_dialog(k), text)
             h.addWidget(self.tb["fx_" + key])
+        h.addWidget(self._sep())
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        for k in ("wave", "spec", "both"):
+            b = T(MODE_ICONS[k], t("vm_" + k) + f" (Alt+{('wave', 'spec', 'both').index(k) + 1})",
+                  lambda k=k: self.set_view_mode(k), checkable=True)
+            b.setChecked(self.cfg.get("view_mode", "wave") == k)
+            self.mode_group.addButton(b)
+            self.tb["mode_" + k] = b
+            h.addWidget(b)
+        self.tb["spectrum"] = T("fa6s.chart-line", t("sp_panel") + " (F6)", lambda: self.show_spectrum_panel(None),
+                                checkable=True)
+        self.tb["spectrum"].setChecked(bool(self.cfg.get("spectrum_panel_on", True)))
+        h.addWidget(self.tb["spectrum"])
+        h.addWidget(self._sep())
+        self.tb["marker"] = T("fa6s.flag", t("mk_add") + " (M)", self.add_marker)
+        h.addWidget(self.tb["marker"])
+        self.tb["region"] = T("fa6s.arrows-left-right-to-line", t("mk_add_region") + " (R)", self.add_region)
+        h.addWidget(self.tb["region"])
         h.addStretch(1)
         return bar
 
@@ -361,9 +465,8 @@ class MainWindow(QMainWindow):
         self.t_end = T("fa6s.forward-step", t("go_end") + " (End)", self.go_end)
         self.t_loop = T("fa6s.repeat", t("loop") + " (Q)", self._toggle_loop, checkable=True)
         self.t_loop.setChecked(self.cfg.get("loop", False))
-        self.t_rec = T("fa6s.circle", t("record"), lambda: None)
+        self.t_rec = T("fa6s.circle", t("record") + " (Ctrl+R)", self.record_toggle)
         self.t_rec.setIcon(style.icon("fa6s.circle", "#e5484d"))
-        self.t_rec.setEnabled(False)
         for b in (self.t_start, self.t_rew, self.t_play, self.t_pause, self.t_stop, self.t_ff, self.t_end,
                   self.t_loop, self.t_rec):
             h.addWidget(b)
@@ -441,6 +544,7 @@ class MainWindow(QMainWindow):
         self.overview.setVisible(d is not None)
         self.meters.set_channels(d.labels if d else ["L", "R"])
         self.meters.reset()
+        self.mlist.fill(d)
         self._update_all()
 
     def _on_tab_moved(self, a: int, b: int) -> None:
@@ -719,6 +823,7 @@ class MainWindow(QMainWindow):
             self.meters.set_channels(d.labels)            # undo of a channel change changes the meters too
         self.wave.refresh()
         self.overview.update()
+        self.mlist.fill(d)
         self._update_all()
 
     def _range(self, d: Document, whole_if_none: bool = True):
@@ -871,7 +976,8 @@ class MainWindow(QMainWindow):
     def _context_menu(self, pos: QPoint) -> None:
         m = QMenu(self)
         for a in (self.a_cut, self.a_copy, self.a_paste, self.a_delete, None, self.a_trim, self.a_silence,
-                  self.a_ins_sil, None, self.a_sel_all, self.a_zoom_sel, self.a_zoom_all, None, *self.proc_actions[:4]):
+                  self.a_ins_sil, None, self.mk_actions["add"], self.mk_actions["region"], None, self.a_sel_all,
+                  self.a_zoom_sel, self.a_zoom_all, None, *self.proc_actions[:4]):
             if a is None:
                 m.addSeparator()
             else:
@@ -1112,7 +1218,7 @@ class MainWindow(QMainWindow):
             self._edited()
             proc = info.get("proc")
             if key == "declick" and proc is not None:
-                self._toast(t("dc_done", proc.found))
+                self._toast(t("declick_done", proc.found))
         if not had_sel:
             self._toast(t("p_whole"))
         self.run_job(t("processing", label), work, done, d)
@@ -1134,6 +1240,339 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_TITLE, t("nr_need_sel"))
             return
         self._toast(t("nr_taken", f"{prof['seconds']:.2f}"))
+
+    # ── markers and regions (0.4) ─────────────────────────────
+    def _markers_changed(self) -> None:
+        d = self.doc
+        self.mlist.fill(d)
+        self.wave.update()
+        self.overview.update()
+        self._update_actions()
+
+    def add_marker(self) -> None:
+        """M: a marker at the cursor — while playing where it plays (the playback goes on)."""
+        d = self.doc
+        if d is None or self.job:
+            return
+        pos = self.player.position() if self.player.state == "play" and self.player.doc is d else d.cursor
+        m = d.add_marker(pos, t("mk_marker_n", self._next_number(d, False)))
+        self._markers_changed()
+        self.mlist.select_id(m.id)
+        self._toast(t("mk_added", m.name, fmt_time(m.pos, d.rate)))
+
+    def add_region(self) -> None:
+        """R: a region of the selection."""
+        d = self.doc
+        if d is None or self.job:
+            return
+        if not d.sel:
+            self._toast(t("mk_need_sel"))
+            return
+        m = d.add_region(*d.sel, t("mk_region_n", self._next_number(d, True)))
+        if m is not None:
+            self._markers_changed()
+            self.mlist.select_id(m.id)
+
+    @staticmethod
+    def _next_number(d, region: bool) -> int:
+        return sum(1 for m in d.markers if (m.end is not None) == region) + 1
+
+    def jump_marker(self, direction: int) -> None:
+        """Ctrl+← / Ctrl+→: the cursor to the previous / next marker or region edge."""
+        d = self.doc
+        if d is None:
+            return
+        playing = self.player.state == "play" and self.player.doc is d
+        here = self.player.position() if playing else d.cursor
+        pts = d.marker_points()
+        if direction < 0:
+            cand = [p for p in pts if p < here - (d.rate // 4 if playing else 0)]
+            target = cand[-1] if cand else None
+        else:
+            cand = [p for p in pts if p > here]
+            target = cand[0] if cand else None
+        if target is None:
+            return
+        if playing:
+            self._on_seek(target)
+            return
+        d.cursor = target
+        d.sel = None
+        self.wave.ensure_visible(target)
+        self._on_selection()
+        self.wave.update()
+
+    def goto_marker(self, mid: int) -> None:
+        """A double click in the list: a marker → the cursor there, a region → selected."""
+        d = self.doc
+        m = d.marker(mid) if d else None
+        if m is None:
+            return
+        if m.end is not None:
+            d.sel = (m.pos, m.end)
+            d.cursor = m.pos
+            a, b = self.wave.visible()
+            if not (a <= m.pos and m.end <= b):
+                if m.end - m.pos > (b - a):
+                    self.wave.zoom_range(m.pos, m.end)
+                else:
+                    self.wave.ensure_visible(m.pos)
+        else:
+            d.sel = None
+            d.cursor = m.pos
+            self.wave.ensure_visible(m.pos)
+            if self.player.state == "play" and self.player.doc is d:
+                self._on_seek(m.pos)
+        self._on_selection()
+        self.wave.update()
+
+    def _marker_moved(self, mid: int, pos: int, end) -> None:
+        d = self.doc
+        if d is None:
+            return
+        d.update_marker(mid, pos=pos, end=end, label="move marker")
+        self._markers_changed()
+
+    def rename_marker(self, mid=None) -> None:
+        d = self.doc
+        if d is None:
+            return
+        if mid is None:
+            ids = self.mlist.selected_ids()
+            mid = ids[0] if ids else None
+        m = d.marker(mid) if mid is not None else None
+        if m is None:
+            return
+        name, ok = QInputDialog.getText(self, t("mk_rename"), t("mk_name"), QLineEdit.Normal, m.name)
+        if ok:
+            self._rename(mid, name.strip())
+
+    def _rename(self, mid: int, name: str) -> None:
+        d = self.doc
+        if d is None or d.marker(mid) is None:
+            return
+        d.update_marker(mid, name=name, label="rename marker")
+        self._markers_changed()
+
+    def delete_markers(self, ids=None) -> None:
+        d = self.doc
+        if d is None:
+            return
+        if ids is None:
+            ids = self.mlist.selected_ids()
+            if not ids and d.sel:                      # the markers in the selection
+                a, b = d.sel
+                ids = [m.id for m in d.markers if a <= m.pos <= b]
+        if ids:
+            d.remove_markers(ids, label="delete marker")
+            self._markers_changed()
+
+    def delete_all_markers(self) -> None:
+        d = self.doc
+        if d and d.markers:
+            d.remove_markers([m.id for m in d.markers], label="delete marker")
+            self._markers_changed()
+
+    def import_markers(self, path: str | None = None) -> None:
+        d = self.doc
+        if d is None:
+            return
+        from . import marks
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, t("mk_import"), self.cfg.get("markers_dir") or
+                                                  (os.path.dirname(d.path) if d.path else ""),
+                                                  f"{t('mk_lists')} (*.csv *.cue *.txt);;{t('files_all')} (*)")
+            if not path:
+                return
+        self.cfg["markers_dir"] = os.path.dirname(path)
+        try:
+            items = marks.import_file(path, d.rate, d.frames)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, APP_TITLE, t("op_failed", e))
+            return
+        if not items:
+            self._toast(t("mk_none_found"))
+            return
+        d.set_markers(items, label="markers")
+        self._markers_changed()
+        self._toast(t("mk_imported", len(items)))
+
+    def export_markers(self, path: str | None = None) -> None:
+        d = self.doc
+        if d is None or not d.markers:
+            self._toast(t("mk_none"))
+            return
+        from . import marks
+        if path is None:
+            stem = os.path.splitext(d.name)[0] if d.name else "markers"
+            folder = self.cfg.get("markers_dir") or (os.path.dirname(d.path) if d.path else os.path.expanduser("~"))
+            path, flt = QFileDialog.getSaveFileName(self, t("mk_export"), os.path.join(folder, stem + ".csv"),
+                                                    "CSV (*.csv);;CUE (*.cue)")
+            if not path:
+                return
+            if not os.path.splitext(path)[1]:
+                path += ".cue" if "cue" in flt.lower() else ".csv"
+        self.cfg["markers_dir"] = os.path.dirname(path)
+        try:
+            marks.export_file(path, d.markers, d.rate, d.path or d.name)
+        except OSError as e:
+            QMessageBox.warning(self, APP_TITLE, t("save_failed", os.path.basename(path), e))
+            return
+        self._toast(t("saved", path))
+
+    def save_regions_dialog(self) -> None:
+        d = self.doc
+        if d is None or self._busy():
+            return
+        if not any(m.end is not None for m in d.markers):
+            QMessageBox.information(self, APP_TITLE, t("rg_none"))
+            return
+        from .markui import RegionsDialog
+        fmt = d.save_format or self.cfg.get("save_format") or "wav"
+        fmt = fmt if fmt in media.FORMATS else "wav"
+        folder = os.path.dirname(d.path) if d.path else (self.cfg.get("save_dir") or os.path.expanduser("~"))
+        dlg = RegionsDialog(d, folder, fmt, self.cfg.get("save_opts", {}).get(fmt, ""), self)
+        if not dlg.exec():
+            return
+        self.save_regions(dlg.path(), dlg.format(), dlg.option(), dlg.numbered.isChecked())
+
+    def save_regions(self, folder: str, fmt: str, opt: str, numbered: bool = True, wait: bool = False) -> list:
+        """Every region into a file of its own in folder (its name from the region). → the paths."""
+        from .markui import region_paths
+        d = self.doc
+        if d is None or not folder:
+            return []
+        os.makedirs(folder, exist_ok=True)
+        jobs = region_paths(d, folder, fmt, numbered)
+        existing = [p for p, _a, _b in jobs if os.path.exists(p)]
+        if existing and not wait and QMessageBox.question(
+                self, APP_TITLE, t("rg_exists", len(existing), os.path.basename(existing[0]))) != QMessageBox.Yes:
+            return []
+        self.stop_play()
+        total = sum(b - a for _p, a, b in jobs) or 1
+        result = {}
+
+        def work(progress):
+            done = 0
+            for path, a, b in jobs:
+                media.save(d, path, fmt, opt, proc.SubProgress(progress, done / total, (done + b - a) / total), a, b)
+                done += b - a
+            return [p for p, _a, _b in jobs]
+
+        def on_done(paths, err):
+            if err:
+                if err != "cancel":
+                    QMessageBox.warning(self, APP_TITLE, t("op_failed", err))
+                return
+            result["paths"] = paths
+            self._toast(t("rg_saved", len(paths), folder))
+        self.run_job(t("rg_saving", len(jobs)), work, on_done, d)
+        if wait:
+            while self.job is not None:
+                QApplication.processEvents()
+                time.sleep(0.01)
+        return result.get("paths", [p for p, _a, _b in jobs])
+
+    # ── analysis: spectrum, spectrogram (0.4) ─────────────────
+    def show_spectrum_panel(self, on=None) -> None:
+        on = not self.spec_panel.isVisible() if on is None else bool(on)
+        self.spec_panel.setVisible(on)
+        self.cfg["spectrum_panel_on"] = on
+        self.a_spec_panel.setChecked(on)
+        self.tb["spectrum"].setChecked(on)
+        if on:
+            self.spec_panel.request()
+
+    def spectrum_dialog(self) -> None:
+        from .anaui import SpectrumDialog
+        if self.spectrum_dlg is None:
+            self.spectrum_dlg = SpectrumDialog(self)
+        self.spectrum_dlg.show()
+        self.spectrum_dlg.raise_()
+        self.spectrum_dlg.refresh()
+
+    def set_view_mode(self, mode: str) -> None:
+        self.cfg["view_mode"] = mode
+        self.wave.set_mode(mode)
+        for k, a in self.mode_actions.items():
+            a.setChecked(k == mode)
+            self.tb["mode_" + k].setChecked(k == mode)
+
+    def _toggle_spectrogram(self) -> None:
+        self.set_view_mode("wave" if self.wave.mode != "wave" else "spec")
+
+    def spectrogram_dialog(self) -> None:
+        from .anaui import SpectrogramDialog
+        dlg = SpectrogramDialog(self)
+        if self.wave.mode == "wave":
+            self.set_view_mode("spec")
+        dlg.exec()
+
+    def set_spectrogram(self, st, save: bool = True) -> None:
+        self.wave.set_sg_settings(st)
+        if save:
+            self.cfg["spectrogram"] = st.to_dict()
+            config.save(self.cfg)
+
+    # ── recording (0.4) ───────────────────────────────────────
+    def record_toggle(self) -> None:
+        """The red button: open the Record window; there, Record; while recording, Stop."""
+        if self.rec_dlg is None:
+            if self._busy():
+                return
+            from .recui import RecordDialog
+            self.stop_play()
+            self.rec_dlg = RecordDialog(self)
+            self.rec_dlg.recorded.connect(self.record_done)
+            self.rec_dlg.finished.connect(lambda _r: self._record_closed())
+            self.rec_dlg.show()
+        elif self.rec_dlg.recording():
+            self.rec_dlg.stop()
+        elif self.rec_dlg.rec.state == "ready" and self.rec_dlg.isVisible():
+            self.rec_dlg.start()
+        else:
+            self.rec_dlg.show()
+            self.rec_dlg.raise_()
+        self._update_transport()
+
+    def _record_closed(self) -> None:
+        dlg, self.rec_dlg = self.rec_dlg, None
+        if dlg is not None:
+            dlg.deleteLater()
+        self._update_transport()
+
+    def record_done(self, info: dict) -> None:
+        """The recording goes into a new file, or into the current one at the cursor / in place of the selection
+        — one undo step, with the markers set while recording."""
+        src = info["src"]
+        n = src.frames
+        mk = [(t("mk_marker_n", i + 1), p, None) for i, p in enumerate(info["markers"])]
+        if info["target"] == "new" or info["doc"] is None or info["doc"] not in self.docs:
+            from . import ff as _ff
+            self._recorded += 1
+            ch, rate = info["channels"], info["rate"]
+            lay = _ff.layout_for(ch)
+            d = Document(rate=rate, channels=ch, folder=os.path.dirname(src.path) if src.path else
+                         self.session.folder(), labels=tuple(_ff.labels(ch, lay)), layout=lay,
+                         name=t("rec_name", self._recorded))
+            from .marks import to_markers
+            d.markers = to_markers(mk, n)
+            d.set_initial(src, "record")
+            d.saved_id = -1
+            self.add_doc(d)
+        else:
+            d = info["doc"]
+            i = self.docs.index(d)
+            if self.tabs.currentIndex() != i:
+                self.tabs.setCurrentIndex(i)
+            a, b = info["a"], info["b"]
+            d.replace(a, b, src, "record", sel=(a, a + n), remap="cut", add_markers=mk)
+            self._edited()
+            self.wave.ensure_visible(a)
+        msg = t("rec_done", fmt_time(n, info["rate"]))
+        if info.get("overflows"):
+            msg += " · " + t("rec_drops", info["overflows"])
+        self._toast(msg)
 
     # ── transport ─────────────────────────────────────────────
     def play_toggle(self) -> None:
@@ -1257,6 +1696,7 @@ class MainWindow(QMainWindow):
             self.meters.feed(p.levels())
         elif self.meters.level.max() > self.meters.FLOOR:
             self.meters.feed(None)
+        self.spec_panel.tick()
 
     # ── keeping the widgets in step ───────────────────────────
     def _on_selection(self) -> None:
@@ -1269,6 +1709,7 @@ class MainWindow(QMainWindow):
             self.counter.setText(fmt_time(0, 48000))
             self.st_sel.setText("")
             self._stats_request()
+            self.spec_panel.request()
             self._update_actions()
             return
         if self.player.state != "play":
@@ -1285,6 +1726,7 @@ class MainWindow(QMainWindow):
             self.f_len.setText("")
             self.st_sel.setText(t("st_frames", f"{d.frames:,}".replace(",", " ")))
         self._stats_request()
+        self.spec_panel.request()
         self._update_actions()
 
     def _on_time_edit(self, key: str, e: QLineEdit) -> None:
@@ -1360,6 +1802,15 @@ class MainWindow(QMainWindow):
         self.a_to_mono.setEnabled(has and not busy and d.channels == 2)
         self.a_to_stereo.setEnabled(has and not busy and d.channels == 1)
         self.a_stats.setEnabled(has)
+        self.a_spectrum.setEnabled(has)
+        nm = has and bool(d.markers)
+        for k, a in self.mk_actions.items():
+            a.setEnabled(has and not busy and (k not in ("prev", "next", "rename", "delete", "delete_all",
+                                                         "export") or nm)
+                         and (k != "region" or sel))
+        self.a_save_regions.setEnabled(has and not busy and any(m.end is not None for m in d.markers))
+        self.tb["marker"].setEnabled(has and not busy)
+        self.tb["region"].setEnabled(has and not busy and sel)
         self.a_undo.setText(t("undo_n", self._label(d.undo_label())) if has and d.can_undo() else t("undo"))
         self.a_redo.setText(t("redo_n", self._label(d.redo_label())) if has and d.can_redo() else t("redo"))
         for key, act in (("save", self.a_save), ("undo", self.a_undo), ("redo", self.a_redo), ("cut", self.a_cut),
@@ -1380,6 +1831,10 @@ class MainWindow(QMainWindow):
         has = self.doc is not None
         for b in (self.t_start, self.t_rew, self.t_play, self.t_pause, self.t_stop, self.t_ff, self.t_end):
             b.setEnabled(has)
+        rec = self.rec_dlg is not None and self.rec_dlg.recording()
+        self.t_rec.setIcon(style.icon("fa6s.square" if rec else "fa6s.circle", "#e5484d"))
+        self.t_rec.setToolTip(t("rec_stop_tip") if rec else t("record") + " (Ctrl+R)")
+        self.t_rec.setChecked(rec)
 
     def _update_all(self) -> None:
         d = self.doc
@@ -1603,6 +2058,8 @@ class MainWindow(QMainWindow):
             self.open_paths(paths)
 
     def closeEvent(self, ev) -> None:
+        if self.rec_dlg is not None:                # a recording in progress becomes a document (asked below)
+            self.rec_dlg.reject()
         if self.job:
             self.cancel_job()
             t0 = time.monotonic()
@@ -1617,7 +2074,12 @@ class MainWindow(QMainWindow):
         self._stats_cancel()
         if self.stats_dlg is not None:
             self.stats_dlg.close()
+        if self.spectrum_dlg is not None:
+            self.spectrum_dlg.close()
+        self.spec_panel.cancel()
+        self.wave.close_engine()
         self.player.stop()
+        self.cfg["side_split"] = self.side_split.sizes()
         self.cfg["geometry"] = bytes(self.saveGeometry().toHex()).decode()
         config.save(self.cfg)
         for d in self.docs:
