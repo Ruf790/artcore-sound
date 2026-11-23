@@ -373,6 +373,7 @@ class MainWindow(QMainWindow, FilmCommands):
                 act = A(m, icon, t("fx_" + key) + "…", lambda k=key: self.effect_dialog(k))
             act.setObjectName("fx_" + key)
             self.fx_actions[key] = act
+        self.build_film_menu(mb, A)                 # 2.0: Фильм / Film
         m = mb.addMenu(t("m_tools"))
         self.a_stats = A(m, "fa6s.table-list", t("stats") + "…", self.statistics_dialog, "Ctrl+I")
         self.a_spectrum = A(m, "fa6s.chart-line", t("sp_title") + "…", self.spectrum_dialog, "Ctrl+Shift+F")
@@ -1244,16 +1245,37 @@ class MainWindow(QMainWindow, FilmCommands):
         if d is None or self._busy() or d.frames <= 0:
             return
         from .dialogs import ValueDialog
+        from . import chans
         items = [(t("ch_mono"), 1), (t("ch_stereo"), 2), ("5.1", 6)]
         dlg = ValueDialog(t("chn_title"), self, t("chn_note"))
         last = int(self.cfg.get("channels_to") or 0)
         c = dlg.combo(t("chn_to"), items, last if last and last != d.channels else (2 if d.channels != 2 else 1))
+        meth = dlg.combo(t("mx_method"), [], None)                  # 2.0: how 5.1 → 2 and 2 → 5.1 go
+
+        def methods():
+            want = int(c.currentData())
+            meth.clear()
+            if d.channels >= 5 and want == 2:
+                for k in chans.DOWNMIX:
+                    meth.addItem(t("mx_" + k), k)
+            elif d.channels <= 2 and want == 6:
+                meth.addItem(t("mx_upmix"), "upmix")
+                meth.addItem(t("mx_plain"), "auto")
+            else:
+                meth.addItem(t("mx_plain"), "auto")
+            i = meth.findData(self.cfg.get("channels_method"))
+            meth.setCurrentIndex(max(0, i))
+        c.currentIndexChanged.connect(lambda _i: methods())
+        methods()
         if dlg.exec() and c.currentData() != d.channels:
             ch = int(c.currentData())
+            how = meth.currentData() or "auto"
             self.cfg["channels_to"] = ch
+            self.cfg["channels_method"] = how
             config.save(self.cfg)
             lay = ff.layout_for(ch)
-            self._process(t("p_channels") + f": {lay}", lambda pr: proc.convert_document(d, d.rate, ch, lay, pr),
+            name = t("p_channels") + f": {lay}" + ("" if how == "auto" else f" ({t('mx_' + how)})")
+            self._process(name, lambda pr: chans.convert(d, ch, how, pr),
                           (0, d.frames), {"channels": ch, "layout": lay, "labels": tuple(ff.labels(ch, lay))})
 
     # ── effects (0.3) ─────────────────────────────────────────
@@ -1977,7 +1999,7 @@ class MainWindow(QMainWindow, FilmCommands):
                       (self.a_silence, sel), (self.a_paste, has and self.clip is not None),
                       (self.a_paste_new, self.clip is not None), (self.a_ins_sil, has), (self.a_sel_all, has),
                       (self.a_zoom_sel, sel), (self.a_play, has), (self.a_play_all, has),
-                      (self.a_return_video, has)):
+                      (self.a_return_video, has), *((x, has) for x in self.film_actions)):
             a.setEnabled(on and not (busy and a not in (self.a_copy, self.a_close_all)))
         for a in self.proc_actions:
             a.setEnabled(has and not busy)
@@ -2285,6 +2307,8 @@ class MainWindow(QMainWindow, FilmCommands):
         self.spec_panel.cancel()
         self.wave.close_engine()
         self.player.stop()
+        if self.video_win is not None:
+            self.video_win.close()
         self.cfg["play_volume_db"] = round(self.volume.db, 1)
         self.cfg["play_muted"] = self.volume.muted
         self.cfg["side_split"] = self.side_split.sizes()

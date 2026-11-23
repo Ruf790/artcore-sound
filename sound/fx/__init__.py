@@ -6,14 +6,18 @@ import threading
 
 from .base import Effect, Param, PreviewChain, Processor, render            # noqa: F401
 from .dynamics import Compressor, Limiter
+from .channels import ChannelMatrix, DialogBoost
 from .eq import GraphicEQ, ParametricEQ
 from .restore import Declick, NoiseReduction, noise_profile, scan_clicks   # noqa: F401
 from .space import Delay, Reverb
 from .tempo import TempoPitch
 
-ORDER = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick")
+ORDER = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick", "chmatrix", "dialog")
+FILM = ("chmatrix", "dialog")          # 2.0: in the Film menu, not Effects
+
+
 _classes = {c.key: c for c in (ParametricEQ, GraphicEQ, Compressor, Limiter, Delay, Reverb, TempoPitch,
-                               NoiseReduction, Declick)}
+                               NoiseReduction, Declick, ChannelMatrix, DialogBoost)}
 EFFECTS: dict[str, Effect] = {k: _classes[k]() for k in ORDER}
 
 

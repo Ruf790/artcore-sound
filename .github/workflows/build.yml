@@ -115,6 +115,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python tools/fetch_ffmpeg.py
 
+      - name: Download libmpv (the video window)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/fetch_libmpv.py
+
       - name: Smoke test from source (ffmpeg, PortAudio / WASAPI, editing, every save format)
         env:
           QT_QPA_PLATFORM: offscreen
@@ -140,6 +145,8 @@ jobs:
           --collect-data qtawesome
           --collect-all _sounddevice_data
           --hidden-import sounddevice
+          --add-binary "libmpv/libmpv-2.dll;."
+          --hidden-import mpv
           --exclude-module PySide6.QtQml
           --exclude-module PySide6.QtQuick
           --exclude-module PySide6.QtQuickWidgets
@@ -174,8 +181,6 @@ jobs:
           --exclude-module PySide6.QtNfc
           --exclude-module PySide6.QtSpatialAudio
           --exclude-module PySide6.QtHttpServer
-          --exclude-module PySide6.QtOpenGL
-          --exclude-module PySide6.QtOpenGLWidgets
           run.py
 
       - name: Trim unused Qt parts, add FFmpeg

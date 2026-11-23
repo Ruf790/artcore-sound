@@ -684,6 +684,32 @@ class EffectDialog(QDialog):
             else:
                 v.addWidget(self.prof_label)
             v.addLayout(self._form([p.key for p in self.eff.params]))
+        elif k == "chmatrix":                          # 2.0: outputs in rows, inputs in columns
+            labels = list(self.d.labels) if self.d.channels else ["L", "R", "C", "LFE", "Ls", "Rs"]
+            v.addWidget(self._hint(t("cm_hint")))
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(4)
+            grid.setVerticalSpacing(3)
+            corner = QLabel(t("cm_out_in"))
+            corner.setObjectName("hint")
+            grid.addWidget(corner, 0, 0)
+            for i, lab in enumerate(labels):
+                cap = QLabel(lab)
+                cap.setAlignment(Qt.AlignCenter)
+                cap.setStyleSheet("font-weight: 700;")
+                grid.addWidget(cap, 0, i + 1)
+            for o, lab in enumerate(labels):
+                cap = QLabel("→ " + lab)
+                cap.setStyleSheet("font-weight: 700;")
+                grid.addWidget(cap, o + 1, 0)
+                for i in range(len(labels)):
+                    w = self._band_widget(self.eff.by_key[f"m{o}{i}"])
+                    w.setSpecialValueText("−∞")
+                    w.setSingleStep(1.0)
+                    w.setMinimumWidth(86)
+                    grid.addWidget(w, o + 1, i + 1)
+            v.addLayout(grid)
+            v.addLayout(self._form(["normalize"]))
         elif k == "declick":
             v.addLayout(self._form([p.key for p in self.eff.params]))
             row = QHBoxLayout()

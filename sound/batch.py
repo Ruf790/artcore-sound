@@ -36,7 +36,7 @@ NOISE_EXT = ".acnoise"
 
 # ── the steps ─────────────────────────────────────────────────
 PROCESS_STEPS = ("gain", "normalize", "dc", "trim_silence", "fades", "channels", "rate")
-FX_STEPS = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick")
+FX_STEPS = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick", "chmatrix", "dialog")
 STEP_KINDS = PROCESS_STEPS + FX_STEPS
 STEP_TITLES = {"gain": "p_gain", "normalize": "p_normalize", "dc": "p_dc", "trim_silence": "p_trim_silence",
                "fades": "bs_fades", "channels": "p_channels", "rate": "p_resample"}
@@ -65,7 +65,10 @@ def _params() -> dict:
                            ("scurve", "curve_scurve")),
                   label="bs_curve")],
         "channels": [Param("channels", "choice", default=2,
-                           choices=((1, "ch_mono"), (2, "ch_stereo"), (6, "bs_ch_51")), label="chn_to")],
+                           choices=((1, "ch_mono"), (2, "ch_stereo"), (6, "bs_ch_51")), label="chn_to"),
+                     Param("method", "choice", default="auto",
+                           choices=(("auto", "mx_plain"), ("itu", "mx_itu"), ("loro", "mx_loro"), ("pl2", "mx_pl2"),
+                                    ("upmix", "mx_upmix")), label="mx_method")],
         "rate": [Param("rate", "choice", default=48000,
                        choices=tuple((r, f"{r} Hz") for r in (8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200,
                                                              96000, 176400, 192000)), label="rs_rate")],
@@ -138,7 +141,8 @@ class Step:
         if k == "fades":
             return t("bs_sum_fades", f"{v['fade_in']:.0f}", f"{v['fade_out']:.0f}")
         if k == "channels":
-            return {1: t("ch_mono"), 2: t("ch_stereo"), 6: "5.1"}[v["channels"]]
+            base = {1: t("ch_mono"), 2: t("ch_stereo"), 6: "5.1"}[v["channels"]]
+            return base if v.get("method", "auto") == "auto" else f"{base}, {t('mx_' + v['method'])}"
         if k == "rate":
             return f"{v['rate']} Hz"
         if k == "nr":
@@ -534,7 +538,8 @@ def apply_step(d, step: Step, progress, notes: list | None = None, profiles: dic
         ch = int(v["channels"])
         if ch != d.channels:
             lay = ff.layout_for(ch)
-            src = proc.convert_document(d, d.rate, ch, lay, progress)
+            from . import chans
+            src = chans.convert(d, ch, v.get("method", "auto"), progress)
             d.replace(0, n, src, "channels", channels=ch, layout=lay, labels=tuple(ff.labels(ch, lay)))
     elif k == "rate":
         rate = int(v["rate"])

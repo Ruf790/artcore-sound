@@ -128,6 +128,9 @@
 | В конец | End |
 | Назад | ← |
 | Вперёд | → |
+| **Фильм** | |
+| Окно видео | F8 |
+| Автосинхронизация с эталоном | Ctrl+Shift+Y |
 | **Инструменты** | |
 | Статистика | Ctrl+I |
 | Спектр | Ctrl+Shift+F |
@@ -239,6 +242,9 @@ An audio editor for Windows in the spirit of Sound Forge.
 | Go to the end | End |
 | Rewind | ← |
 | Forward | → |
+| **Film** | |
+| Video window | F8 |
+| Auto sync to a reference | Ctrl+Shift+Y |
 | **Tools** | |
 | Statistics | Ctrl+I |
 | Spectrum | Ctrl+Shift+F |

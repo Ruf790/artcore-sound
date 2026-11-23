@@ -55,7 +55,8 @@ def selftest() -> int:
     the 440 Hz tone, a spectrogram tile, markers and regions written into a WAV (cue / labl) and read back and kept
     by an edit, a recording through the null input, and a WASAPI input stream opened (or a clear word that there is
     no input device). 1.0: a batch of 3 files in worker processes of the exe, a long Cyrillic path, the crash
-    journal, the error report. 2.0: the listening volume (−12 dB heard, the meters unchanged, the file untouched)."""
+    journal, the error report. 2.0: the listening volume (−12 dB heard, the meters unchanged, the file untouched); the film tools (return to
+    video with E-AC-3 / DTS, the automatic sync, Pro Logic II, libmpv)."""
     import tempfile
     import time
     import traceback
@@ -474,6 +475,66 @@ def _selftest_20(src, session, tmp: str, lines: list) -> None:
     lines.append(f"input monitor: −6 dB set → {mdb:.2f} dB heard")
     if abs(mdb + 6) > 0.3:
         raise RuntimeError("the input monitor's volume")
+    _selftest_film(session, tmp, lines)
+
+
+def _selftest_film(session, tmp: str, lines: list) -> None:
+    """2.0 block 1: a film (H.264 + AC-3 5.1 + subtitles) — its track replaced by E-AC-3 and DTS and checked;
+    the automatic sync of a delayed copy; the Pro Logic II downmix; libmpv loaded and the film opened in it."""
+    import time
+
+    import numpy as np
+
+    from . import chans, ff, film, media, sync
+    exe = ff.ffmpeg()
+    src = os.path.join(tmp, "Фильм.mkv")
+    srt = os.path.join(tmp, "s.srt")
+    with open(srt, "w", encoding="utf-8") as f:
+        f.write("1\n00:00:00,500 --> 00:00:02,000\nПривет\n")
+    r = ff.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=160x120:r=25:d=6", "-f", "lavfi", "-i",
+                "aevalsrc='0.4*sin(2*PI*440*t)*gt(mod(t,0.7),0.5)':s=48000:d=6", "-i", srt, "-filter_complex",
+                "[1]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0[a]", "-map", "0:v", "-map", "[a]", "-map", "2",
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "ac3", "-c:s", "srt", src], 120)
+    if r.returncode != 0:
+        raise RuntimeError("making the film failed: " + r.stderr[-300:])
+    d = media.open_file(src, session.folder(), 0)
+    for codec in ("eac3", "dts"):
+        out = os.path.join(tmp, f"Фильм {codec}.mkv")
+        res = film.return_to_video(d, film.Options(replace_index=d.film["index"], codec=codec, lang="rus",
+                                                   title="Дубляж", out_path=out))
+        lines.append(f"return to video ({codec}): {res.streams}, track {res.track + 1} {res.codec} "
+                     f"{res.channels} ch {res.duration:.2f} s")
+    shifted = media.open_file(src, session.folder(), 0)
+    sync.shift(shifted, int(0.3 * shifted.rate))
+    est = sync.estimate(sync.envelope_of_doc(d), sync.envelope_of_doc(shifted), speeds=False, window_s=2.0)
+    lines.append(f"auto sync: {est.offset * 1000:+.1f} ms (0.3 s delayed copy), confidence {est.confidence:.2f}")
+    if abs(est.offset - 0.3) > 0.015:
+        raise RuntimeError("the automatic sync")
+    pl2 = chans.convert(d, 2, "pl2")
+    y = pl2.read(0, pl2.frames)
+    lines.append(f"Pro Logic II: {pl2.frames} frames, peak {np.abs(y).max():.3f}")
+    from .videoui import load_mpv, mpv_error
+    mpv = load_mpv()
+    if mpv is None:
+        lines.append(f"libmpv: not available ({mpv_error()[:80]}) — the video window shows still frames")
+        if getattr(sys, "frozen", False):
+            raise RuntimeError("libmpv-2.dll is missing from the build")
+        return
+    p = mpv.MPV(vo="null", aid="no", audio="no", pause=True, config=False, terminal=False, idle="yes")
+    try:
+        p.play(src)
+        t0 = time.monotonic()
+        while (p.duration is None) and time.monotonic() - t0 < 15:
+            time.sleep(0.05)
+        p.command("seek", 2.0, "absolute+exact")
+        t0 = time.monotonic()
+        while (p.time_pos is None or abs(p.time_pos - 2.0) > 0.05) and time.monotonic() - t0 < 15:
+            time.sleep(0.05)
+        lines.append(f"libmpv {p.mpv_version}: the film opened, {p.duration:.2f} s, at {p.time_pos:.2f} s")
+        if p.duration is None or abs((p.time_pos or 0) - 2.0) > 0.05:
+            raise RuntimeError("libmpv did not seek")
+    finally:
+        p.terminate()
 
 
 def main() -> int:

@@ -21,7 +21,7 @@ STEP_ICONS = {"gain": "fa6s.volume-high", "normalize": "fa6s.chart-simple", "dc"
               "channels": "fa6s.code-branch", "rate": "fa6s.gauge", "eq": "fa6s.sliders", "geq": "fa6s.chart-column",
               "comp": "fa6s.compress", "limit": "fa6s.arrows-down-to-line", "delay": "fa6s.clone",
               "reverb": "fa6s.church", "tempo": "fa6s.gauge-high", "nr": "fa6s.wand-magic-sparkles",
-              "declick": "fa6s.bolt"}
+              "declick": "fa6s.bolt", "chmatrix": "fa6s.table-cells", "dialog": "fa6s.comment"}
 STATUS_COLORS = {"ok": "#3fb27f", "error": "#e5534b", "skip": "#c69026", "cancel": "#8b949e", "run": "#4c9aff"}
 COLS = ("n", "file", "status", "progress", "lufs", "peak", "time", "note")
 

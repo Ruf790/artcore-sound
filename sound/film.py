@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import ff, store
-from .media import Cancelled, Progress, _rm, _stderr_reader, ch_layout_args
+from .media import Progress, _rm, _stderr_reader, ch_layout_args
 
 
 @dataclass(frozen=True)
