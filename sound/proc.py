@@ -260,17 +260,11 @@ def pipe_through(reader, frames: int, in_rate: int, in_ch: int, in_layout: str, 
     w = store.SourceWriter(folder, out_ch)
     fb = 4 * out_ch
     want = max(1.0, frames * out_rate / in_rate)
-    rest = b""
+    del fb
+    from .media import pipe_frames
     try:
-        while True:
-            data = proc.stdout.read(store.CHUNK * fb)
-            if not data:
-                break
-            data = rest + data
-            whole = len(data) // fb * fb
-            rest = data[whole:]
-            if whole:
-                w.append(np.frombuffer(data[:whole], np.float32).reshape(-1, out_ch))
+        for x in pipe_frames(proc.stdout, out_ch):
+            w.append(x)
             progress(w.frames / want)
         proc.wait()
         th.join(5)

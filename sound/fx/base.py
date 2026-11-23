@@ -15,6 +15,7 @@ two line up)."""
 from __future__ import annotations
 
 import math
+import os
 import threading
 from dataclasses import dataclass, field
 
@@ -23,6 +24,7 @@ import numpy as np
 from .. import store
 from ..media import Progress
 
+FFT_WORKERS = max(1, os.cpu_count() or 1)   # threads of the effects' FFTs (1 in the batch's worker processes)
 SILENT = 1e-5                 # −100 dBFS: a tail quieter than this for TAIL_QUIET seconds has ended
 TAIL_QUIET = 0.25
 

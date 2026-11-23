@@ -43,6 +43,17 @@ DEFAULTS = {
     "side_split":    [],            # the meters / the marker list
     "record":        {},            # the Record window: device, channels, rate, pre-roll, trigger
     "markers_dir":   "",
+    # 1.0
+    "main_split":    [],            # the waveform | the side panel
+    "dialogs":       {},            # the size and place of each resizable dialog (winstate.py)
+    "gain_db":       3.0,           # Process → Volume
+    "silence_s":     1.0,           # Edit → Insert silence
+    "resample_rate": 0,             # Process → Sample rate
+    "channels_to":   0,             # Process → Channels
+    "batch_last":    {},            # the batch window's job when it was last closed
+    "batch_geometry": "",
+    "batch_split":   [],
+    "noise_dir":     "",            # where noise samples (*.acnoise) were saved / loaded
 }
 
 RECENT_MAX = 12

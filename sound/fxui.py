@@ -6,16 +6,17 @@ done by ffmpeg (tempo, pitch) first renders a piece ahead and shows that it is p
 from __future__ import annotations
 
 import math
+import os
 import threading
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout,
-                               QHBoxLayout, QInputDialog, QLabel, QPushButton, QSizePolicy, QSlider, QSpinBox,
-                               QVBoxLayout, QWidget)
+                               QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QSizePolicy, QSlider,
+                               QSpinBox, QVBoxLayout, QWidget)
 
-from . import config, fx, style
+from . import APP_TITLE, config, fx, style
 from .doc import fmt_time
 from .fx import eq as eqm
 from .i18n import t
@@ -497,12 +498,24 @@ class EffectDialog(QDialog):
     """One effect over [a, b) of the window's document (the selection, or the whole file)."""
     scanned = Signal(object, int)                      # clicks found (frames), run
 
-    def __init__(self, win, key: str, d, a: int, b: int, whole: bool):
+    def __init__(self, win, key: str, d, a: int, b: int, whole: bool, batch: dict | None = None):
+        """batch (1.0): the dialog edits a step of a batch — {"values": …, "file": the name of the file previewed
+        (d is its first seconds; an empty d: no preview)}; Apply becomes OK and nothing is applied."""
         super().__init__(win)
         self.win, self.key, self.d, self.a, self.b, self.whole = win, key, d, a, b, whole
+        self.batch = batch
         self.eff = fx.get(key)
         cfg = win.cfg
-        last = (cfg.get("fx_last") or {}).get(key) or {}
+        if batch is not None:
+            last = dict(batch.get("values") or {})
+            self.profile_path = str(last.get("profile") or "")
+            if key == "nr":
+                import copy
+                self.eff = copy.copy(self.eff)
+                self.eff.profile = None
+                self._load_profile(self.profile_path)
+        else:
+            last = (cfg.get("fx_last") or {}).get(key) or {}
         self.values = self.eff.clean({**self.eff.defaults(), **last})
         self.rows: dict = {}
         self.chain = None                               # the PreviewChain while previewing in real time
@@ -519,8 +532,11 @@ class EffectDialog(QDialog):
         head = QLabel(t(self.eff.name))
         head.setStyleSheet("font-size: 13pt; font-weight: 700; padding-bottom: 2px;")
         lay.addWidget(head)
-        what = t("p_whole") if whole else t("fx_sel", fmt_time(a, d.rate), fmt_time(b, d.rate),
-                                             fmt_time(b - a, d.rate))
+        if batch is not None:
+            what = t("bt_fx_what", batch.get("file")) if d.frames else t("bt_fx_no_preview")
+        else:
+            what = t("p_whole") if whole else t("fx_sel", fmt_time(a, d.rate), fmt_time(b, d.rate),
+                                                 fmt_time(b - a, d.rate))
         self.what = QLabel(what)
         self.what.setObjectName("hint")
         self.what.setWordWrap(True)
@@ -532,7 +548,8 @@ class EffectDialog(QDialog):
         self.keep_tail = None
         if self.eff.has_tail:
             self.keep_tail = QCheckBox(t("fx_keep_tail"))
-            self.keep_tail.setChecked(bool(cfg.get("fx_keep_tail", True)))
+            self.keep_tail.setChecked(bool(cfg.get("fx_keep_tail", True)) if batch is None else
+                                      bool(batch.get("values", {}).get("keep_tail", True)))
             lay.addWidget(self.keep_tail)
         self.status = QLabel("")
         self.status.setObjectName("hint")
@@ -550,7 +567,10 @@ class EffectDialog(QDialog):
         row.addWidget(self.b_preview)
         row.addWidget(self.b_bypass)
         row.addStretch(1)
-        self.b_apply = QPushButton(t("fx_apply"))
+        self.b_apply = QPushButton(t("fx_apply") if batch is None else t("ok"))
+        if batch is not None and not d.frames:
+            self.b_preview.setEnabled(False)
+            self.b_bypass.setEnabled(False)
         self.b_apply.setObjectName("primary")
         self.b_apply.setDefault(True)
         self.b_apply.clicked.connect(self.accept)
@@ -654,7 +674,15 @@ class EffectDialog(QDialog):
             self.noise_graph = NoiseGraph()
             v.addWidget(self.noise_graph, 1)
             self.prof_label = self._hint("")
-            v.addWidget(self.prof_label)
+            if self.batch is not None:
+                row = QHBoxLayout()
+                row.addWidget(self.prof_label, 1)
+                b = QPushButton(style.icon("fa6s.folder-open"), t("bt_profile_pick") + "…")
+                b.clicked.connect(self._pick_profile)
+                row.addWidget(b)
+                v.addLayout(row)
+            else:
+                v.addWidget(self.prof_label)
             v.addLayout(self._form([p.key for p in self.eff.params]))
         elif k == "declick":
             v.addLayout(self._form([p.key for p in self.eff.params]))
@@ -665,6 +693,8 @@ class EffectDialog(QDialog):
             self.found = QLabel("")
             row.addWidget(self.found, 1)
             v.addLayout(row)
+            if self.batch is not None:
+                self.b_find.hide()
         else:
             v.addLayout(self._form([p.key for p in self.eff.params]))
             if k == "reverb":
@@ -846,7 +876,7 @@ class EffectDialog(QDialog):
             for k in ("bpm", "note"):
                 self.rows[k].setEnabled(v["sync"])
             self.rows["time"].setEnabled(not v["sync"])
-            self.rows["pingpong"].setEnabled(self.d.channels == 2)
+            self.rows["pingpong"].setEnabled(self.d.channels == 2 or self.batch is not None)
         if self.key == "eq":
             for i in range(1, eqm.N_BANDS + 1):
                 on = v[f"b{i}_on"]
@@ -858,7 +888,15 @@ class EffectDialog(QDialog):
                                      fmt_time(self.eff.length_after(v, n), self.d.rate)))
         if self.key == "nr":
             prof = self.eff.profile
-            if prof is None:
+            if self.batch is not None and prof is None:
+                self.prof_label.setText(t("bt_profile_none") if not self.profile_path else
+                                        t("bt_profile_bad", os.path.basename(self.profile_path)))
+                self.noise_graph.set(None, v["sensitivity"])
+            elif self.batch is not None:
+                self.prof_label.setText(t("bt_profile", os.path.basename(self.profile_path),
+                                          f"{prof.get('seconds', 0):.2f}", prof["rate"], prof["channels"]))
+                self.noise_graph.set(prof, v["sensitivity"])
+            elif prof is None:
                 self.prof_label.setText(t("nr_no_profile"))
                 self.noise_graph.set(None, v["sensitivity"])
             elif prof["rate"] != self.d.rate:
@@ -962,6 +1000,8 @@ class EffectDialog(QDialog):
                 self.status.setText(t("fx_preparing", int(rp.frac * 100)))
         if self.chain is not None and self.chain.error:
             self.status.setText(t("fx_failed", self.chain.error))
+        if self.key == "declick" and not self.b_find.isEnabled():
+            self.found.setText(t("dc_searching", int(getattr(self, "_scan_frac", 0.0) * 100)))
         if self.b_preview.isChecked() and self.chain is not None and self.win.player.state != "play":
             self.stop_preview()
 
@@ -995,7 +1035,39 @@ class EffectDialog(QDialog):
 
     # ── the result ────────────────────────────────────────────
     def result_values(self) -> dict:
-        return dict(self.values)
+        v = dict(self.values)
+        if self.batch is not None:
+            if self.key == "nr":
+                v["profile"] = self.profile_path
+            if self.keep_tail is not None:
+                v["keep_tail"] = self.keep_tail.isChecked()
+        return v
+
+    # ── the noise sample of a batch step (a file) ─────────────
+    def _load_profile(self, path: str) -> None:
+        from . import batch as bt
+        self.eff.profile = None
+        if path:
+            try:
+                self.eff.profile = bt.adapt_noise_profile(bt.load_noise_profile(path), self.d.rate)
+            except (OSError, ValueError, KeyError):
+                self.eff.profile = None
+
+    def _pick_profile(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from . import batch as bt
+        start = self.profile_path or self.win.cfg.get("noise_dir") or ""
+        path, _f = QFileDialog.getOpenFileName(self, t("bt_profile_pick"), start,
+                                               t("nr_file_filter") + f" (*{bt.NOISE_EXT})")
+        if not path:
+            return
+        self.profile_path = path
+        self._load_profile(path)
+        if self.eff.profile is None:
+            QMessageBox.warning(self, APP_TITLE, t("bt_profile_bad", os.path.basename(path)))
+        if self.chain is not None:
+            self.start_preview()
+        self._sync()
 
     def keep_tail_on(self) -> bool:
         return bool(self.keep_tail is not None and self.keep_tail.isChecked())
@@ -1003,7 +1075,7 @@ class EffectDialog(QDialog):
     def done(self, r: int) -> None:
         self.timer.stop()
         self.stop_preview()
-        if r:
+        if r and self.batch is None:
             cfg = self.win.cfg
             cfg.setdefault("fx_last", {})[self.key] = dict(self.values)
             if self.keep_tail is not None:

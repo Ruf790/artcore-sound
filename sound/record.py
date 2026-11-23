@@ -152,7 +152,6 @@ class Recorder:
         self.pre_roll = 0                # frames kept before Record
         self.trigger = None              # linear level that starts the writing (armed), None = at once
         self._folder = ""
-        self._result = None
 
     # ── the input ─────────────────────────────────────────────
     def open(self, device: dict | None, channels: int, rate: int) -> bool:
@@ -228,7 +227,6 @@ class Recorder:
         self.dropped_frames = 0
         self.markers = []
         self.peak_input = 0.0
-        self._result = None
         self.trigger = None if trigger_db is None else 10 ** (trigger_db / 20.0)
         w = store.SourceWriter(folder, self.channels)
         with self._wlock:

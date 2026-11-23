@@ -16,9 +16,10 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLay
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressBar, QScrollBar, QSplitter,
                                QTabBar, QToolButton, QVBoxLayout, QWidget)
 
-from . import APP_TITLE, AUDIO_EXT, VERSION, VIDEO_EXT, analysis, config, ff, media, proc, style, winint
+from . import APP_TITLE, AUDIO_EXT, VERSION, VIDEO_EXT, analysis, config, ff, keys, media, proc, style, winint
 from . import spectrogram as sgm
 from .doc import Document, fmt_time, parse_time
+from .errors import human as human_error
 from .i18n import fmt_bytes, t
 from .player import Player
 from .waveview import Meters, Overview, WaveView
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
         self.stats_dlg = None
         self.spectrum_dlg = None
         self.rec_dlg = None
+        self.batch_win = None
         self._recorded = 0
         self.fx_dlg = None                      # the effect window while it is open
         self.job = None                         # (label, Progress) while a long job runs
@@ -78,6 +80,13 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(30)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
+        self._jkeys: dict = {}                  # document → the journal key last written (recovery.py)
+        self.journal_timer = QTimer(self)
+        self.journal_timer.setInterval(1000)
+        self.journal_timer.timeout.connect(self.write_journals)
+        self.journal_timer.start()
+        from . import crash
+        crash.on_crash.append(lambda: self.write_journals(True))
         geo = cfg.get("geometry")
         if geo:
             from PySide6.QtCore import QByteArray
@@ -87,6 +96,8 @@ class MainWindow(QMainWindow):
     # ── building ──────────────────────────────────────────────
     def _act(self, menu, icon: str, text: str, slot, keys=None) -> QAction:
         a = QAction(style.icon(icon) if icon else QIcon(), text, self)
+        from . import crash
+        a.triggered.connect(lambda _c=False, n=text: crash.note(n))
         a.triggered.connect(lambda _c=False: slot())
         if keys:
             seqs = [QKeySequence(k) for k in (keys if isinstance(keys, (list, tuple)) else [keys])]
@@ -172,7 +183,7 @@ class MainWindow(QMainWindow):
         mid.addWidget(right)
         mid.setStretchFactor(0, 1)
         mid.setStretchFactor(1, 0)
-        mid.setSizes([1080, 330])
+        mid.setSizes([int(x) for x in self.cfg.get("main_split") or []] or [1080, 330])
         self.splitter = mid
         root.addWidget(mid, 1)
         root.addWidget(self._build_transport())
@@ -203,11 +214,12 @@ class MainWindow(QMainWindow):
         A(m, "fa6s.gear", t("settings") + "…", self.settings_dialog, "Ctrl+,")
         if updater.can_self_update():
             A(m, "fa6s.cloud-arrow-down", t("upd_check_now"), lambda: self.check_updates(True))
+        self.a_keys = A(m, "fa6s.keyboard", t("ks_title") + "…", self.keys_dialog, "F1")
         A(m, "fa6s.circle-info", t("about"), self.about)
         m.addSeparator()
         A(m, "", t("quit"), self.close, "Ctrl+Q")
         m = mb.addMenu(t("m_file"))
-        A(m, "fa6s.folder-open", t("open") + "…", self.open_dialog, "Ctrl+O")
+        self.a_open = A(m, "fa6s.folder-open", t("open") + "…", self.open_dialog, "Ctrl+O")
         self.recent_menu = m.addMenu(style.icon("fa6s.clock-rotate-left"), t("recent"))
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         m.addSeparator()
@@ -223,6 +235,8 @@ class MainWindow(QMainWindow):
         m = mb.addMenu(t("m_edit"))
         self.a_undo = A(m, "fa6s.rotate-left", t("undo"), self.undo, "Ctrl+Z")
         self.a_redo = A(m, "fa6s.rotate-right", t("redo"), self.redo, ["Ctrl+Y", "Ctrl+Shift+Z"])
+        self.a_undo.setProperty("acName", t("undo"))
+        self.a_redo.setProperty("acName", t("redo"))
         self.history_menu = m.addMenu(style.icon("fa6s.list"), t("history"))
         self.history_menu.aboutToShow.connect(self._fill_history)
         m.addSeparator()
@@ -242,7 +256,7 @@ class MainWindow(QMainWindow):
         self.a_sel_end = A(m, "", t("select_to_end"), lambda: self._select_to(None), "Shift+End")
         m = mb.addMenu(t("m_markers"))
         self.mk_actions = {}
-        for key, icon, text, slot, keys in (
+        for key, icon, text, slot, seq in (
                 ("add", "fa6s.flag", t("mk_add"), self.add_marker, "M"),
                 ("region", "fa6s.arrows-left-right-to-line", t("mk_add_region"), self.add_region, "R"),
                 (None, None, None, None, None),
@@ -258,7 +272,7 @@ class MainWindow(QMainWindow):
             if key is None:
                 m.addSeparator()
                 continue
-            self.mk_actions[key] = A(m, icon, text, slot, keys)
+            self.mk_actions[key] = A(m, icon, text, slot, seq)
         m.addSeparator()
         m.addAction(self.a_save_regions)
         m = mb.addMenu(t("m_view"))
@@ -272,8 +286,8 @@ class MainWindow(QMainWindow):
         vm = m.addMenu(style.icon("fa6s.chart-area"), t("vm_mode"))
         grp = QActionGroup(self)
         self.mode_actions = {}
-        for k, keys in (("wave", "Alt+1"), ("spec", "Alt+2"), ("both", "Alt+3")):
-            a = A(vm, MODE_ICONS[k], t("vm_" + k), lambda k=k: self.set_view_mode(k), keys)
+        for k, seq in (("wave", "Alt+1"), ("spec", "Alt+2"), ("both", "Alt+3")):
+            a = A(vm, MODE_ICONS[k], t("vm_" + k), lambda k=k: self.set_view_mode(k), seq)
             a.setCheckable(True)
             a.setChecked(self.cfg.get("view_mode", "wave") == k)
             grp.addAction(a)
@@ -287,10 +301,10 @@ class MainWindow(QMainWindow):
         self.a_follow.setCheckable(True)
         self.a_follow.setChecked(self.cfg.get("follow", True))
         m.addSeparator()
-        A(m, "fa6s.backward-step", t("go_start"), self.go_start, "Home")
-        A(m, "fa6s.forward-step", t("go_end"), self.go_end, "End")
-        A(m, "", t("rewind"), lambda: self.nudge(-1), "Left")
-        A(m, "", t("forward"), lambda: self.nudge(1), "Right")
+        self.a_go_start = A(m, "fa6s.backward-step", t("go_start"), self.go_start, "Home")
+        self.a_go_end = A(m, "fa6s.forward-step", t("go_end"), self.go_end, "End")
+        self.a_rewind = A(m, "", t("rewind"), lambda: self.nudge(-1), "Left")
+        self.a_forward = A(m, "", t("forward"), lambda: self.nudge(1), "Right")
         m.addSeparator()
         tm = m.addMenu(t("theme"))
         grp = QActionGroup(self)
@@ -341,6 +355,10 @@ class MainWindow(QMainWindow):
                 continue
             if key == "take_noise":
                 act = A(m, icon, t("fx_take_noise"), self.take_noise_sample)
+                self.fx_actions["save_noise"] = A(m, "fa6s.floppy-disk", t("nr_save_sample") + "…",
+                                                  self.save_noise_sample)
+                self.fx_actions["load_noise"] = A(m, "fa6s.folder-open", t("nr_load_sample") + "…",
+                                                  self.load_noise_sample)
             else:
                 act = A(m, icon, t("fx_" + key) + "…", lambda k=key: self.effect_dialog(k))
             act.setObjectName("fx_" + key)
@@ -351,11 +369,13 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self.a_sg_mode = A(m, "fa6s.chart-area", t("sg_toggle"), self._toggle_spectrogram, "F7")
         m.addAction(self.a_sg_settings)
+        m.addSeparator()
+        self.a_batch = A(m, "fa6s.layer-group", t("bt_title") + "…", self.batch_window, "Ctrl+B")
         m = mb.addMenu(t("m_transport"))
         self.a_play = A(m, "fa6s.play", t("play"), self.play_toggle, "Space")
         self.a_play_all = A(m, "fa6s.circle-play", t("play_all"), self.play_all, "Shift+Space")
-        A(m, "fa6s.pause", t("pause"), self.pause, "Ctrl+Space")
-        A(m, "fa6s.stop", t("stop"), self.stop_play)
+        self.a_pause = A(m, "fa6s.pause", t("pause"), self.pause, "Ctrl+Space")
+        self.a_stop = A(m, "fa6s.stop", t("stop"), self.stop_play)
         self.a_loop = A(m, "fa6s.repeat", t("loop"), self._toggle_loop, "Q")
         self.a_loop.setCheckable(True)
         self.a_loop.setChecked(self.cfg.get("loop", False))
@@ -383,25 +403,26 @@ class MainWindow(QMainWindow):
         h.setSpacing(2)
         T = self._tool                                                    # noqa: N806
         self.tb = {}
-        for key, icon, tip, slot in (("open", "fa6s.folder-open", t("open_tip"), self.open_dialog),
-                                     ("save", "fa6s.floppy-disk", t("save_tip"), self.save),
+        K = keys.tip                                                      # noqa: N806 — the tips from the actions
+        for key, icon, tip, slot in (("open", "fa6s.folder-open", K(self.a_open, t("open_tip")), self.open_dialog),
+                                     ("save", "fa6s.floppy-disk", K(self.a_save, t("save_tip")), self.save),
                                      ("|", None, None, None),
-                                     ("undo", "fa6s.rotate-left", t("undo") + " (Ctrl+Z)", self.undo),
-                                     ("redo", "fa6s.rotate-right", t("redo") + " (Ctrl+Y)", self.redo),
+                                     ("undo", "fa6s.rotate-left", K(self.a_undo), self.undo),
+                                     ("redo", "fa6s.rotate-right", K(self.a_redo), self.redo),
                                      ("|", None, None, None),
-                                     ("cut", "fa6s.scissors", t("cut") + " (Ctrl+X)", self.cut),
-                                     ("copy", "fa6s.copy", t("copy") + " (Ctrl+C)", self.copy),
-                                     ("paste", "fa6s.paste", t("paste") + " (Ctrl+V)", self.paste),
-                                     ("delete", "fa6s.trash-can", t("delete") + " (Del)", self.delete),
+                                     ("cut", "fa6s.scissors", K(self.a_cut), self.cut),
+                                     ("copy", "fa6s.copy", K(self.a_copy), self.copy),
+                                     ("paste", "fa6s.paste", K(self.a_paste), self.paste),
+                                     ("delete", "fa6s.trash-can", K(self.a_delete), self.delete),
                                      ("|", None, None, None),
-                                     ("trim", "fa6s.crop-simple", t("trim") + " (Ctrl+T)", self.trim),
-                                     ("silence", "fa6s.volume-xmark", t("silence") + " (Ctrl+L)", self.silence),
+                                     ("trim", "fa6s.crop-simple", K(self.a_trim), self.trim),
+                                     ("silence", "fa6s.volume-xmark", K(self.a_silence), self.silence),
                                      ("|", None, None, None),
-                                     ("zoom_in", "fa6s.magnifying-glass-plus", t("zoom_in") + " (↑)",
+                                     ("zoom_in", "fa6s.magnifying-glass-plus", K(self.a_zoom_in),
                                       lambda: self.wave.zoom(0.5)),
-                                     ("zoom_out", "fa6s.magnifying-glass-minus", t("zoom_out") + " (↓)",
+                                     ("zoom_out", "fa6s.magnifying-glass-minus", K(self.a_zoom_out),
                                       lambda: self.wave.zoom(2.0)),
-                                     ("zoom_all", "fa6s.expand", t("zoom_all") + " (Ctrl+↑)", self.wave.zoom_all),
+                                     ("zoom_all", "fa6s.expand", K(self.a_zoom_all), self.wave.zoom_all),
                                      ("|", None, None, None)):
             if key == "|":
                 h.addWidget(self._sep())
@@ -423,20 +444,19 @@ class MainWindow(QMainWindow):
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)
         for k in ("wave", "spec", "both"):
-            b = T(MODE_ICONS[k], t("vm_" + k) + f" (Alt+{('wave', 'spec', 'both').index(k) + 1})",
-                  lambda k=k: self.set_view_mode(k), checkable=True)
+            b = T(MODE_ICONS[k], K(self.mode_actions[k]), lambda k=k: self.set_view_mode(k), checkable=True)
             b.setChecked(self.cfg.get("view_mode", "wave") == k)
             self.mode_group.addButton(b)
             self.tb["mode_" + k] = b
             h.addWidget(b)
-        self.tb["spectrum"] = T("fa6s.chart-line", t("sp_panel") + " (F6)", lambda: self.show_spectrum_panel(None),
+        self.tb["spectrum"] = T("fa6s.chart-line", K(self.a_spec_panel), lambda: self.show_spectrum_panel(None),
                                 checkable=True)
         self.tb["spectrum"].setChecked(bool(self.cfg.get("spectrum_panel_on", True)))
         h.addWidget(self.tb["spectrum"])
         h.addWidget(self._sep())
-        self.tb["marker"] = T("fa6s.flag", t("mk_add") + " (M)", self.add_marker)
+        self.tb["marker"] = T("fa6s.flag", K(self.mk_actions["add"]), self.add_marker)
         h.addWidget(self.tb["marker"])
-        self.tb["region"] = T("fa6s.arrows-left-right-to-line", t("mk_add_region") + " (R)", self.add_region)
+        self.tb["region"] = T("fa6s.arrows-left-right-to-line", K(self.mk_actions["region"]), self.add_region)
         h.addWidget(self.tb["region"])
         h.addStretch(1)
         return bar
@@ -454,18 +474,19 @@ class MainWindow(QMainWindow):
         h.setContentsMargins(10, 6, 10, 6)
         h.setSpacing(4)
         T = self._tool                                                    # noqa: N806
-        self.t_start = T("fa6s.backward-step", t("go_start") + " (Home)", self.go_start)
-        self.t_rew = T("fa6s.backward", t("rewind") + " (←)", lambda: self.nudge(-1))
-        self.t_play = T("fa6s.play", t("play_tip"), self.play_toggle)
+        K = keys.tip                                                      # noqa: N806
+        self.t_start = T("fa6s.backward-step", K(self.a_go_start), self.go_start)
+        self.t_rew = T("fa6s.backward", K(self.a_rewind), lambda: self.nudge(-1))
+        self.t_play = T("fa6s.play", K(self.a_play, t("play_tip")), self.play_toggle)
         self.t_play.setObjectName("play")
         self.t_play.setIconSize(self.t_play.iconSize() * 1.25)
-        self.t_pause = T("fa6s.pause", t("pause") + " (Ctrl+Space)", self.pause)
-        self.t_stop = T("fa6s.stop", t("stop"), self.stop_play)
-        self.t_ff = T("fa6s.forward", t("forward") + " (→)", lambda: self.nudge(1))
-        self.t_end = T("fa6s.forward-step", t("go_end") + " (End)", self.go_end)
-        self.t_loop = T("fa6s.repeat", t("loop") + " (Q)", self._toggle_loop, checkable=True)
+        self.t_pause = T("fa6s.pause", K(self.a_pause), self.pause)
+        self.t_stop = T("fa6s.stop", K(self.a_stop), self.stop_play)
+        self.t_ff = T("fa6s.forward", K(self.a_forward), lambda: self.nudge(1))
+        self.t_end = T("fa6s.forward-step", K(self.a_go_end), self.go_end)
+        self.t_loop = T("fa6s.repeat", K(self.a_loop), self._toggle_loop, checkable=True)
         self.t_loop.setChecked(self.cfg.get("loop", False))
-        self.t_rec = T("fa6s.circle", t("record") + " (Ctrl+R)", self.record_toggle)
+        self.t_rec = T("fa6s.circle", K(self.a_record), self.record_toggle)
         self.t_rec.setIcon(style.icon("fa6s.circle", "#e5484d"))
         for b in (self.t_start, self.t_rew, self.t_play, self.t_pause, self.t_stop, self.t_ff, self.t_end,
                   self.t_loop, self.t_rec):
@@ -636,7 +657,7 @@ class MainWindow(QMainWindow):
         try:
             info = ff.probe(path)
         except Exception as e:
-            QMessageBox.warning(self, APP_TITLE, t("open_failed", os.path.basename(path), e))
+            QMessageBox.warning(self, APP_TITLE, t("open_failed", os.path.basename(path), human_error(e)))
             QTimer.singleShot(0, self._open_next)
             return
         pos = info.tracks[0].pos
@@ -781,7 +802,7 @@ class MainWindow(QMainWindow):
             except media.Cancelled:
                 self.bridge.done.emit(None, "cancel", on_done)
             except Exception as e:
-                self.bridge.done.emit(None, str(e) or type(e).__name__, on_done)
+                self.bridge.done.emit(None, human_error(e), on_done)
         threading.Thread(target=go, daemon=True).start()
 
     def _on_progress(self, f: float) -> None:
@@ -817,7 +838,21 @@ class MainWindow(QMainWindow):
         self.stop_play()
         return d
 
+    def collect_garbage(self) -> int:
+        """Delete the working files of the sources only a discarded redo branch used — once neither the clipboard
+        nor another document (a paste) holds them. A long film's effect undone and replaced frees its gigabytes at
+        once instead of at the exit. → how many sources were deleted."""
+        if not any(d.orphans for d in self.docs):
+            return 0
+        live = set()
+        for d in self.docs:
+            live |= {id(s) for s in d.sources()}
+        if self.clip is not None:
+            live |= {id(s) for s, _o, _n in self.clip.pieces}
+        return sum(d.free_orphans(live) for d in self.docs)
+
     def _edited(self) -> None:
+        self.collect_garbage()
         d = self.doc
         if d is not None:
             self.meters.set_channels(d.labels)            # undo of a channel change changes the meters too
@@ -936,9 +971,12 @@ class MainWindow(QMainWindow):
             return
         from .dialogs import ValueDialog
         dlg = ValueDialog(t("insert_silence"), self)
-        f = dlg.time_field(t("length"), d.rate, d.rate)
+        f = dlg.time_field(t("length"), int(float(self.cfg.get("silence_s", 1.0)) * d.rate), d.rate)
         if dlg.exec():
             n = ValueDialog.frames_of(f)
+            if n:
+                self.cfg["silence_s"] = n / d.rate
+                config.save(self.cfg)
             d = self._edit_doc()
             if d and n:
                 d.insert_silence(d.cursor if not d.sel else d.sel[0], n)
@@ -1011,7 +1049,20 @@ class MainWindow(QMainWindow):
                 after()
         if whole and not had_sel and not meta:
             self._toast(t("p_whole"))
+        self._make_room(d, b - a)
         self.run_job(t("processing", label), make, done, d)
+
+    def _make_room(self, d: Document, frames: int) -> None:
+        """Before a job writes `frames` new frames: when the disk of the working files has not that much room,
+        the steps Redo would bring back are forgotten and their files deleted first (a toast says so)."""
+        need = int(frames * d.channels * 4 * 1.05)
+        free = winint.free_space(self.session.path)
+        if free < 0 or free >= need or not d.can_redo():
+            return
+        d.discard_redo()
+        n = self.collect_garbage()
+        self._update_actions()
+        self._toast(t("room_made", fmt_bytes(winint.free_space(self.session.path)), n))
 
     def simple_op(self, op: str, **kw) -> None:
         d = self.doc
@@ -1031,8 +1082,10 @@ class MainWindow(QMainWindow):
             return
         from .dialogs import ValueDialog
         dlg = ValueDialog(t("p_gain_title"), self, t("p_whole") if not d.sel else "")
-        s = dlg.spin(t("p_gain_by"), 3.0, -96, 48, " dB")
+        s = dlg.spin(t("p_gain_by"), float(self.cfg.get("gain_db", 3.0)), -96, 48, " dB")
         if dlg.exec():
+            self.cfg["gain_db"] = s.value()
+            config.save(self.cfg)
             self.simple_op("gain", db=s.value())
 
     def normalize_dialog(self) -> None:
@@ -1155,9 +1208,13 @@ class MainWindow(QMainWindow):
             return
         from .dialogs import RATES, ValueDialog
         dlg = ValueDialog(t("rs_title"), self, t("rs_note"))
-        c = dlg.combo(t("rs_rate"), [(f"{r} Hz", r) for r in RATES], 48000 if d.rate != 48000 else 44100)
+        last = int(self.cfg.get("resample_rate") or 0)
+        c = dlg.combo(t("rs_rate"), [(f"{r} Hz", r) for r in RATES],
+                      last if last and last != d.rate else (48000 if d.rate != 48000 else 44100))
         if dlg.exec() and c.currentData() != d.rate:
             rate = int(c.currentData())
+            self.cfg["resample_rate"] = rate
+            config.save(self.cfg)
             self._process(t("p_resample") + f" {rate} Hz", lambda pr: proc.convert_document(d, rate, d.channels,
                                                                                             d.layout, pr),
                           (0, d.frames), {"rate": rate})
@@ -1169,9 +1226,12 @@ class MainWindow(QMainWindow):
         from .dialogs import ValueDialog
         items = [(t("ch_mono"), 1), (t("ch_stereo"), 2), ("5.1", 6)]
         dlg = ValueDialog(t("chn_title"), self, t("chn_note"))
-        c = dlg.combo(t("chn_to"), items, 2 if d.channels != 2 else 1)
+        last = int(self.cfg.get("channels_to") or 0)
+        c = dlg.combo(t("chn_to"), items, last if last and last != d.channels else (2 if d.channels != 2 else 1))
         if dlg.exec() and c.currentData() != d.channels:
             ch = int(c.currentData())
+            self.cfg["channels_to"] = ch
+            config.save(self.cfg)
             lay = ff.layout_for(ch)
             self._process(t("p_channels") + f": {lay}", lambda pr: proc.convert_document(d, d.rate, ch, lay, pr),
                           (0, d.frames), {"channels": ch, "layout": lay, "labels": tuple(ff.labels(ch, lay))})
@@ -1221,6 +1281,7 @@ class MainWindow(QMainWindow):
                 self._toast(t("declick_done", proc.found))
         if not had_sel:
             self._toast(t("p_whole"))
+        self._make_room(d, b - a)
         self.run_job(t("processing", label), work, done, d)
 
     def take_noise_sample(self) -> None:
@@ -1240,6 +1301,110 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_TITLE, t("nr_need_sel"))
             return
         self._toast(t("nr_taken", f"{prof['seconds']:.2f}"))
+
+    def save_noise_sample(self) -> None:
+        """Effects → Save the noise sample…: the sample taken into a file (*.acnoise) — the batch's noise reduction
+        and a later session use it."""
+        from . import batch, fx
+        prof = fx.get("nr").profile
+        if prof is None:
+            QMessageBox.information(self, APP_TITLE, t("nr_no_sample"))
+            return
+        d = self.doc
+        stem = os.path.splitext(d.name)[0] if d is not None and d.name else "noise"
+        start = os.path.join(self.cfg.get("noise_dir") or self.cfg.get("save_dir") or "", f"{stem} noise{batch.NOISE_EXT}")
+        path, _f = QFileDialog.getSaveFileName(self, t("nr_save_sample"), start,
+                                               t("nr_file_filter") + f" (*{batch.NOISE_EXT})")
+        if not path:
+            return
+        if not path.lower().endswith(batch.NOISE_EXT):
+            path += batch.NOISE_EXT
+        try:
+            batch.save_noise_profile(path, prof)
+        except OSError as e:
+            QMessageBox.warning(self, APP_TITLE, human_error(e))
+            return
+        self.cfg["noise_dir"] = os.path.dirname(path)
+        config.save(self.cfg)
+        self._toast(t("nr_saved", os.path.basename(path)))
+
+    def load_noise_sample(self) -> None:
+        from . import batch, fx
+        path, _f = QFileDialog.getOpenFileName(self, t("nr_load_sample"), self.cfg.get("noise_dir") or "",
+                                               t("nr_file_filter") + f" (*{batch.NOISE_EXT})")
+        if not path:
+            return
+        try:
+            prof = batch.load_noise_profile(path)
+        except (OSError, ValueError, KeyError) as e:
+            QMessageBox.warning(self, APP_TITLE, t("bt_profile_bad", os.path.basename(path)) + "\n" + str(e))
+            return
+        d = self.doc
+        if d is not None and d.rate != prof["rate"]:
+            prof = batch.adapt_noise_profile(prof, d.rate)
+        fx.get("nr").profile = prof
+        self.cfg["noise_dir"] = os.path.dirname(path)
+        config.save(self.cfg)
+        self._toast(t("nr_loaded", os.path.basename(path), f"{prof.get('seconds', 0):.2f}"))
+
+    def keys_dialog(self) -> None:
+        from .dialogs import KeysDialog
+        KeysDialog(self.menuBar(), self).exec()
+
+    # ── recovery after a crash (1.0) ──────────────────────────
+    def write_journals(self, force: bool = False) -> None:
+        """The journal of every open document whose piece table, history or markers changed (recovery.py)."""
+        from . import recovery
+        for d in list(self.docs):
+            if not d.history:
+                continue
+            key = recovery.journal_key(d)
+            if not force and self._jkeys.get(id(d)) == key:
+                continue
+            try:
+                recovery.write(d, self.session.path)
+                self._jkeys[id(d)] = key
+            except (OSError, ValueError):
+                pass                                  # a full disk: the next change tries again
+
+    def offer_recovery(self, entries) -> int:
+        """At the start: the unsaved documents of a run that crashed — restore the chosen ones, remove the rest.
+        → how many were restored."""
+        from . import recovery, store
+        from .dialogs import RecoveryDialog
+        dlg = RecoveryDialog(entries, self)
+        chosen = dlg.chosen() if dlg.exec() else []
+        n = 0
+        failed = []
+        for e in chosen:
+            try:
+                d = recovery.restore(e, self.session)
+            except (OSError, ValueError, KeyError, IndexError) as ex:
+                failed.append(f"{e.name}: {human_error(ex)}")
+                continue
+            self.add_doc(d)
+            n += 1
+        store.clean_stale(self.session.root)
+        if failed:
+            QMessageBox.warning(self, APP_TITLE, t("rc_failed", "\n".join(failed)))
+        if n:
+            self._toast(t("rc_done", n))
+        return n
+
+    # ── batch processing (1.0) ────────────────────────────────
+    def batch_window(self) -> None:
+        from .batchui import BatchWindow
+        if self.batch_win is None:
+            self.batch_win = BatchWindow(self)
+            self.batch_win.finished.connect(self._batch_closed)
+        self.batch_win.show()
+        self.batch_win.raise_()
+        self.batch_win.activateWindow()
+
+    def _batch_closed(self, _r=0) -> None:
+        if self.batch_win is not None:
+            self.batch_win.deleteLater()
+        self.batch_win = None
 
     # ── markers and regions (0.4) ─────────────────────────────
     def _markers_changed(self) -> None:
@@ -1821,8 +1986,8 @@ class MainWindow(QMainWindow):
             self.tb[key].setEnabled(has)
         for key in ("normalize", "fade_in", "fade_out"):
             self.tb[key].setEnabled(has and not busy)
-        self.tb["undo"].setToolTip(self.a_undo.text() + " (Ctrl+Z)")
-        self.tb["redo"].setToolTip(self.a_redo.text() + " (Ctrl+Y)")
+        self.tb["undo"].setToolTip(keys.tip(self.a_undo))
+        self.tb["redo"].setToolTip(keys.tip(self.a_redo))
         self._title()
 
     def _update_transport(self) -> None:
@@ -1833,7 +1998,8 @@ class MainWindow(QMainWindow):
             b.setEnabled(has)
         rec = self.rec_dlg is not None and self.rec_dlg.recording()
         self.t_rec.setIcon(style.icon("fa6s.square" if rec else "fa6s.circle", "#e5484d"))
-        self.t_rec.setToolTip(t("rec_stop_tip") if rec else t("record") + " (Ctrl+R)")
+        self.t_rec.setToolTip(keys.tip(self.a_record, t("rec_stop_tip")) if rec else
+                              keys.tip(self.a_record))
         self.t_rec.setChecked(rec)
 
     def _update_all(self) -> None:
@@ -2058,6 +2224,15 @@ class MainWindow(QMainWindow):
             self.open_paths(paths)
 
     def closeEvent(self, ev) -> None:
+        if self.batch_win is not None:
+            if self.batch_win._running() and \
+                    QMessageBox.question(self, APP_TITLE, t("bt_quit_q")) != QMessageBox.Yes:
+                ev.ignore()
+                return
+            if self.batch_win.runner is not None and self.batch_win.runner.running:
+                self.batch_win.runner.cancel()
+                self.batch_win.runner.wait(30)
+            self.batch_win.close()
         if self.rec_dlg is not None:                # a recording in progress becomes a document (asked below)
             self.rec_dlg.reject()
         if self.job:
@@ -2080,6 +2255,7 @@ class MainWindow(QMainWindow):
         self.wave.close_engine()
         self.player.stop()
         self.cfg["side_split"] = self.side_split.sizes()
+        self.cfg["main_split"] = self.splitter.sizes()
         self.cfg["geometry"] = bytes(self.saveGeometry().toHex()).decode()
         config.save(self.cfg)
         for d in self.docs:

@@ -225,7 +225,6 @@ class ValueDialog(QDialog):
         return parse_time(e.text(), int(e.property("rate")))
 
 
-CURVES = ("linear", "log", "exp", "scurve")
 RATES = (8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000)
 
 
@@ -673,3 +672,107 @@ class StatsDialog(QDialog):
     def closeEvent(self, ev) -> None:
         self.cancel()
         super().closeEvent(ev)
+
+
+class RecoveryDialog(QDialog):
+    """At the start after a crash: the documents with unsaved changes, each with a check box."""
+
+    def __init__(self, entries, parent=None):
+        import datetime
+        super().__init__(parent)
+        self.entries = list(entries)
+        self.setWindowTitle(t("rc_title"))
+        self.setMinimumWidth(620)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.addWidget(_head(t("rc_title")))
+        lay.addWidget(_hint(t("rc_note")))
+        self.list = QListWidget()
+        for e in self.entries:
+            when = datetime.datetime.fromtimestamp(e.time).strftime("%Y-%m-%d %H:%M") if e.time else ""
+            it = QListWidgetItem(style.icon("fa6s.wave-square"),
+                                 t("rc_item", e.name, fmt_time(e.duration * 1000, 1000, False), e.steps, when))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked)
+            it.setToolTip(e.data.get("path") or "")
+            self.list.addItem(it)
+        lay.addWidget(self.list, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok = bb.button(QDialogButtonBox.Ok)
+        ok.setObjectName("primary")
+        ok.setText(t("rc_restore"))
+        bb.button(QDialogButtonBox.Cancel).setText(t("rc_discard"))
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self._discard)
+        lay.addWidget(bb)
+
+    def _discard(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        from . import APP_TITLE
+        if QMessageBox.question(self, APP_TITLE, t("rc_discard_q")) == QMessageBox.Yes:
+            self.reject()
+
+    def chosen(self) -> list:
+        return [e for i, e in enumerate(self.entries) if self.list.item(i).checkState() == Qt.Checked]
+
+
+class KeysDialog(QDialog):
+    """ArtCore Sound → Hotkeys: every shortcut of the menus (made from the actions themselves), a filter, and
+    what the mouse does in the waveform."""
+
+    def __init__(self, menubar, parent=None):
+        from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+        from . import keys
+        super().__init__(parent)
+        self.setWindowTitle(t("ks_title"))
+        self.setMinimumSize(640, 620)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.addWidget(_head(t("ks_title")))
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText(t("ks_filter"))
+        self.filter.setClearButtonEnabled(True)
+        self.filter.textChanged.connect(self._filter)
+        lay.addWidget(self.filter)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels([t("ks_command"), t("ks_keys")])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.rows = keys.table(menubar)
+        last = None
+        for menu, cmd, k in self.rows:
+            if menu != last:
+                head = QTreeWidgetItem([menu, ""])
+                f = head.font(0)
+                f.setBold(True)
+                head.setFont(0, f)
+                head.setFlags(Qt.ItemIsEnabled)
+                self.tree.addTopLevelItem(head)
+                last = menu
+            it = QTreeWidgetItem(["    " + cmd, k])
+            self.tree.addTopLevelItem(it)
+        head = QTreeWidgetItem([t("ks_mouse"), ""])
+        f = head.font(0)
+        f.setBold(True)
+        head.setFont(0, f)
+        self.tree.addTopLevelItem(head)
+        for key in keys.MOUSE:
+            what, _sep, how = t(key).partition("|")
+            self.tree.addTopLevelItem(QTreeWidgetItem(["    " + what, how]))
+        self.tree.resizeColumnToContents(0)
+        self.tree.setColumnWidth(0, max(self.tree.columnWidth(0) + 20, 360))
+        lay.addWidget(self.tree, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.button(QDialogButtonBox.Close).setText(t("close"))
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _filter(self, text: str) -> None:
+        q = text.strip().lower()
+        for i in range(self.tree.topLevelItemCount()):
+            it = self.tree.topLevelItem(i)
+            if it.text(1) == "" and not it.text(0).startswith("    "):
+                it.setHidden(bool(q))                          # group heads only without a filter
+                continue
+            it.setHidden(bool(q) and q not in it.text(0).lower() and q not in it.text(1).lower())

@@ -21,6 +21,9 @@ MIN_BLOCKS = 4             # the last level has at least this many blocks
 CHUNK = 1 << 16            # frames per read / write step (64 K frames: 1.5 MB for 5.1 float)
 
 
+READ_DIRECT = 256 << 10      # reads of at least this many bytes go through the file, not the mapping
+
+
 class Source:
     """A finished, read-only raw float32 file + its peak levels. kind "zero" = silence (no file)."""
 
@@ -33,6 +36,9 @@ class Source:
         if kind == "data" and self.frames:
             self.data = np.memmap(path, dtype=np.float32, mode="r", shape=(self.frames, self.channels))
         self.levels = levels or []          # [np.ndarray (blocks, channels, 2)] for BASE, BASE*4 …
+        self._local = threading.local()     # a file handle per thread for the big reads
+        self._handles: list = []
+        self._hlock = threading.Lock()
 
     @classmethod
     def zero(cls, channels: int) -> "Source":
@@ -45,11 +51,36 @@ class Source:
     def read(self, start: int, n: int, out: np.ndarray | None = None) -> np.ndarray:
         if out is None:
             out = np.empty((n, self.channels), np.float32)
-        if self.kind == "zero":
+        if self.kind == "zero" or self.data is None:           # silence, or a source already deleted
             out[:n] = 0
+        elif n * self.channels * 4 >= READ_DIRECT and out[:n].flags.c_contiguous and self._read_file(start, out[:n]):
+            pass
         else:
             out[:n] = self.data[start:start + n]
         return out
+
+    def _read_file(self, start: int, dst: np.ndarray) -> bool:
+        """A big run of frames by plain file reading (1.0). Through the mapping, Windows brings the file in a page
+        fault at a time with little read-ahead — 4–5× slower than reading it, which goes through the system's
+        cache with full read-ahead; the small reads of drawing stay on the mapping."""
+        f = getattr(self._local, "f", None)
+        try:
+            if f is None:
+                f = open(self.path, "rb", buffering=0)
+                with self._hlock:
+                    self._handles.append(f)
+                self._local.f = f
+            f.seek(start * self.channels * 4)
+            view = memoryview(dst).cast("B")
+            got = 0
+            while got < len(view):
+                k = f.readinto(view[got:])
+                if not k:
+                    return False
+                got += k
+            return True
+        except (OSError, ValueError):
+            return False
 
     def size_bytes(self) -> int:
         n = self.frames * self.channels * 4 if self.kind == "data" else 0
@@ -58,6 +89,31 @@ class Source:
     def close(self):
         self.data = None
         self.levels = []
+        with self._hlock:
+            for f in self._handles:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+            self._handles = []
+
+
+def delete_source(src: Source) -> bool:
+    """Close a source and delete its working files (the sound and the peak levels). → whether they are gone (a file
+    still mapped somewhere on Windows stays until the session folder is removed)."""
+    path = src.path
+    src.close()
+    if not path:
+        return True
+    ok = True
+    for p in [path] + [f"{path}.p{k}" for k in range(16)]:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            ok = False
+    return ok
 
 
 def _block_peaks(x: np.ndarray) -> np.ndarray:
@@ -130,6 +186,18 @@ class SourceWriter:
                 pass
 
     def finish(self) -> Source:
+        try:
+            return self._finish()
+        except BaseException:
+            self.abort()
+            for k in range(1, 16):
+                try:
+                    os.remove(f"{self.path}.p{k}")
+                except OSError:
+                    pass
+            raise
+
+    def _finish(self) -> Source:
         if len(self._tail):
             pk = _block_peaks(self._tail)
             self._pk.write(pk.tobytes())
@@ -155,6 +223,30 @@ class SourceWriter:
                     n += nxt.shape[0]
             levels.append(np.memmap(path, dtype=np.float32, mode="r", shape=(n, ch, 2)))
         return Source(self.path, self.frames, ch, levels)
+
+
+def open_source(path: str, frames: int, channels: int) -> Source:
+    """A finished source again from its files (the recovery after a crash): the sound and its peak levels, as
+    SourceWriter left them. ValueError when a file is missing or of the wrong size."""
+    if not frames:
+        return Source("", 0, channels, kind="data")
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        raise ValueError(f"missing {path}") from e
+    if size != frames * channels * 4:
+        raise ValueError(f"damaged {path}")
+    levels = []
+    k = 0
+    while os.path.isfile(f"{path}.p{k}"):
+        n = os.path.getsize(f"{path}.p{k}") // (channels * 8)
+        if not n:
+            break
+        levels.append(np.memmap(f"{path}.p{k}", dtype=np.float32, mode="r", shape=(n, channels, 2)))
+        k += 1
+    if not levels or levels[0].shape[0] != -(-frames // BASE):
+        raise ValueError(f"no peaks for {path}")
+    return Source(path, frames, channels, levels)
 
 
 def from_array(folder: str, x: np.ndarray) -> Source:
@@ -207,11 +299,12 @@ def _mm(src: Source, s0: int, s1: int, level: int, out: list) -> None:
 class Session:
     """The working folder of this run: <root>\\s-<id>\\ with a lock file. Every document gets its own subfolder."""
 
-    def __init__(self, root: str):
+    def __init__(self, root: str, clean: bool = True):
         from PySide6.QtCore import QLockFile
         self.root = root
         os.makedirs(root, exist_ok=True)
-        clean_stale(root)
+        if clean:
+            clean_stale(root)
         self.path = os.path.join(root, "s-" + uuid.uuid4().hex[:10])
         os.makedirs(self.path)
         self._lock = QLockFile(os.path.join(self.path, "lock"))
@@ -219,6 +312,18 @@ class Session:
         self._lock.tryLock(100)
         self._n = itertools.count(1)
         self._mutex = threading.Lock()
+        self._adopted: list = []
+
+    def adopt(self, path: str) -> None:
+        """Take over the folder of a run that is gone (its documents were recovered): locked while this run lives,
+        removed with this session."""
+        from PySide6.QtCore import QLockFile
+        if path == self.path or any(p == path for p, _l in self._adopted):
+            return
+        lock = QLockFile(os.path.join(path, "lock"))
+        lock.setStaleLockTime(0)
+        lock.tryLock(100)
+        self._adopted.append((path, lock))
 
     def folder(self) -> str:
         with self._mutex:
@@ -226,22 +331,19 @@ class Session:
         os.makedirs(p, exist_ok=True)
         return p
 
-    def used_bytes(self) -> int:
-        total = 0
-        for dp, _, fs in os.walk(self.path):
-            for f in fs:
-                try:
-                    total += os.path.getsize(os.path.join(dp, f))
-                except OSError:
-                    pass
-        return total
-
     def close(self) -> None:
         try:
             self._lock.unlock()
         except Exception:
             pass
         shutil.rmtree(self.path, ignore_errors=True)
+        for path, lock in self._adopted:
+            try:
+                lock.unlock()
+            except Exception:
+                pass
+            shutil.rmtree(path, ignore_errors=True)
+        self._adopted = []
 
 
 def clean_stale(root: str) -> int:

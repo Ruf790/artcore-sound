@@ -58,13 +58,6 @@ class _Filt:
         y, self.zi = signal.lfilter(self.ba[0], self.ba[1], x, axis=0, zi=self.zi)
         return y
 
-    def retune(self, ba):
-        if (ba is None) != (self.ba is None):
-            self.zi = np.zeros_like(self.zi) if self.zi is not None else np.zeros((1, 1))
-        self.ba = ba
-        if ba is not None and self.zi is None:
-            self.zi = np.zeros((1, 1))
-
 
 def delay_frames(p: dict, rate: int) -> int:
     if p["sync"]:

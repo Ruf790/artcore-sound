@@ -19,8 +19,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from scipy import fft as sfft
 from scipy import linalg, ndimage, signal
 
+from . import base
 from .base import Effect, Param, Processor
 
 
@@ -103,7 +105,7 @@ class NoiseProc(Processor):
         if self.noise is None:
             out[:] = 0.0
             return out, strong
-        pw = np.abs(spec) ** 2
+        pw = spec.real ** 2 + spec.imag ** 2
         a = self.t_alpha
         thr = self.noise * self.thr
         for i in range(len(spec)):
@@ -122,37 +124,45 @@ class NoiseProc(Processor):
             stream = np.concatenate((self.inp, self.pending[:nf * hop]))
             self.pending = self.pending[nf * hop:]
             self.inp = stream[nf * hop:]
-            idx = np.arange(nf)[:, None] * hop + np.arange(n)[None, :]
-            spec = np.fft.rfft(stream[idx] * self.win[None, :, None], axis=1).transpose(0, 2, 1)
+            frames = np.lib.stride_tricks.sliding_window_view(stream, n, axis=0)[::hop][:nf]   # (nf, ch, n)
+            spec = sfft.rfft(frames * self.win, axis=2, workers=base.FFT_WORKERS)          # (nf, ch, bins)
             gates, strong = self._gates(spec)
             self.spec_q = np.concatenate((self.spec_q, spec)) if len(self.spec_q) else spec
             self.gate_q = np.concatenate((self.gate_q, gates)) if len(self.gate_q) else gates
             self.strong_q = np.concatenate((self.strong_q, strong)) if len(self.strong_q) else strong
             m = len(self.spec_q) - self.look
             if m > 0:
-                g = self.gate_q[:m].copy()
                 if self.att_step != float("inf"):
-                    for j in range(1, self.look + 1):
-                        g = np.maximum(g, self.gate_q[j:j + m] - j * self.att_step)
+                    # the attack: g[t] = max over j ≥ 0 of gate[t + j] − j·step — a reverse running maximum of
+                    # gate[k] − k·step, shifted back by t·step (frames past the look-ahead never win: the gate
+                    # spans only the reduction)
+                    k = np.arange(len(self.gate_q), dtype=np.float64)[:, None, None] * self.att_step
+                    v = np.ascontiguousarray((self.gate_q - k)[::-1])
+                    g = (np.maximum.accumulate(v, axis=0)[::-1] + k)[:m]
+                else:
+                    g = self.gate_q[:m].copy()
                 if self.f_width > 0:
                     g = ndimage.uniform_filter1d(g, 2 * self.f_width + 1, axis=2, mode="nearest")
                     g = np.where(self.strong_q[:m], 0.0, g)
                 if self.noise is None:
                     gain = np.zeros_like(g) if self.residual else np.ones_like(g)
                 else:
-                    gain = 10 ** (g / 20.0)
+                    gain = np.exp(g * (math.log(10.0) / 20.0))
                     if self.residual:
                         gain = 1.0 - gain
-                y = np.fft.irfft(self.spec_q[:m] * gain, n=n, axis=2).transpose(0, 2, 1)
-                y *= self.win[None, :, None] * 0.5
+                y = sfft.irfft(self.spec_q[:m] * gain, n=n, axis=2, workers=base.FFT_WORKERS)  # (m, ch, n)
+                y *= self.win * 0.5
                 self.spec_q, self.gate_q, self.strong_q = self.spec_q[m:], self.gate_q[m:], self.strong_q[m:]
-                ready = np.empty((m * hop, self.ch))
-                acc = self.acc
-                for i in range(m):
-                    acc += y[i]
-                    ready[i * hop:(i + 1) * hop] = acc[:hop]
-                    acc = np.concatenate((acc[hop:], np.zeros((hop, self.ch))))
-                self.acc = acc
+                # overlap-add of the m frames at once: hop block i of the output is the sum of quarter k of
+                # frame i − k (k = 0 … 3) and of what the frames before left in acc
+                q = n // hop
+                z = np.zeros((m + q, self.ch, hop))
+                z[:q] += self.acc.reshape(q, hop, self.ch).transpose(0, 2, 1)
+                yq = y.reshape(m, self.ch, q, hop)
+                for j in range(q):
+                    z[j:j + m] += yq[:, :, j]
+                ready = z[:m].transpose(0, 2, 1).reshape(m * hop, self.ch)
+                self.acc = z[m:].transpose(0, 2, 1).reshape(n, self.ch).copy()
                 self.out = np.concatenate((self.out, ready))
         out, self.out = self.out[:len(x)], self.out[len(x):]
         return out

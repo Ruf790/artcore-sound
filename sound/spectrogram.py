@@ -19,6 +19,7 @@ import threading
 from dataclasses import asdict, dataclass
 
 import numpy as np
+from scipy import fft as sfft
 
 from .spectrum import window
 
@@ -145,10 +146,6 @@ def quantize(db: np.ndarray) -> np.ndarray:
     return np.clip(q, 1, 255).astype(np.uint8)
 
 
-def level_of(q: int) -> float:
-    return Q_LO + (q - 1) / 254.0 * (Q_HI - Q_LO)
-
-
 # ── reading a fixed copy of the pieces ────────────────────────
 class PieceReader:
     """Frames of a piece list that covers document frames [base, base + Σn) — zeros outside."""
@@ -202,24 +199,44 @@ def compute_tile(reader: PieceReader, frames: int, rate: int, spp: float, tile: 
     seg0 = np.floor(centres - fft / 2).astype(np.int64)
     lo_f, hi_f = int(seg0.min()), int(seg0.max()) + fft
     span = hi_f - lo_f
-    group = max(1, (1 << 19) // (m * fft))                    # columns per batch (½ M frames, a few MB)
+    group = max(1, (1 << 19) // (m * fft * len(chs)))         # columns per batch (½ M samples, a few MB)
     whole = None
+    whole_t = None
+    all_chs = list(chs) == list(range(reader.ch))
     if span <= max(8 * fft, 1 << 20):                         # near columns: read once (≤ 1 M frames)
         whole = reader.read(lo_f, span)
+        whole_t = np.ascontiguousarray(whole.T if all_chs else whole[:, np.asarray(chs)].T)
+        whole = None                                          # only the channel-major copy is kept
     live = np.flatnonzero(alive)
+    chs_a = np.asarray(chs)
+    dense = m * fft >= 0.5 * spp                              # the segments cover most of a column: read it whole
+    ar = np.arange(fft)
     for g0 in range(0, len(live), group):
         cs = live[g0:g0 + group]
         sidx = (cs[:, None] * m + np.arange(m)[None, :]).ravel()
         st = seg0[sidx]
-        if whole is not None:
-            seg = whole[(st - lo_f)[:, None] + np.arange(fft)[None, :]]          # (segs, fft, ch)
+        # x: (channels, segments, fft), filled channel-major so the FFT runs over contiguous rows; float64 — the
+        # bottom of the dB scale (−150 dB and below) is under float32's rounding
+        x = np.empty((len(chs), len(st), fft), np.float64)
+        if whole_t is not None:
+            x[:] = whole_t[:, (st - lo_f)[:, None] + ar[None, :]]
+        elif dense:                                           # a read per column, the segments cut from it
+            for k in range(len(cs)):
+                s0 = int(st[k * m])
+                blk = reader.read(s0, int(st[k * m + m - 1]) + fft - s0)
+                bt = blk.T if all_chs else blk[:, chs_a].T
+                x[:, k * m:(k + 1) * m] = bt[:, (st[k * m:(k + 1) * m] - s0)[:, None] + ar[None, :]]
         else:
-            seg = np.stack([reader.read(int(p), fft) for p in st])
-        for j, c in enumerate(chs):
-            x = seg[:, :, c].astype(np.float64) * w[None, :]
-            pw = np.abs(np.fft.rfft(x, axis=1)) ** 2 * gain
-            pw = pw.reshape(len(cs), m, -1).mean(axis=1)
-            r = to_rows(pw, rmap)
+            for k, p0 in enumerate(st):
+                blk = reader.read(int(p0), fft)
+                x[:, k] = blk.T if all_chs else blk[:, chs_a].T
+        x *= w                                                # in place
+        # through scipy's FFT: it lets the other tile thread run meanwhile
+        spec = sfft.rfft(x, axis=2)
+        pw = (spec.real * spec.real + spec.imag * spec.imag) * gain
+        pw = pw.reshape(len(chs), len(cs), m, -1).mean(axis=2)                    # (ch, cols, bins)
+        for j in range(len(chs)):
+            r = to_rows(pw[j], rmap)
             with np.errstate(divide="ignore"):
                 db = 10.0 * np.log10(np.maximum(r, 1e-30))
             out[j][:, cs] = quantize(db)[:, ::-1].T
