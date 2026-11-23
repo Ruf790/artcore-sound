@@ -169,6 +169,30 @@ class SourceWriter:
         return Source(self.path, self.frames, ch, levels)
 
 
+def open_source(path: str, frames: int, channels: int) -> Source:
+    """A finished source again from its files (the recovery after a crash): the sound and its peak levels, as
+    SourceWriter left them. ValueError when a file is missing or of the wrong size."""
+    if not frames:
+        return Source("", 0, channels, kind="data")
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        raise ValueError(f"missing {path}") from e
+    if size != frames * channels * 4:
+        raise ValueError(f"damaged {path}")
+    levels = []
+    k = 0
+    while os.path.isfile(f"{path}.p{k}"):
+        n = os.path.getsize(f"{path}.p{k}") // (channels * 8)
+        if not n:
+            break
+        levels.append(np.memmap(f"{path}.p{k}", dtype=np.float32, mode="r", shape=(n, channels, 2)))
+        k += 1
+    if not levels or levels[0].shape[0] != -(-frames // BASE):
+        raise ValueError(f"no peaks for {path}")
+    return Source(path, frames, channels, levels)
+
+
 def from_array(folder: str, x: np.ndarray) -> Source:
     """A source made from frames in memory (small things: tests, a short effect result)."""
     x = np.asarray(x, np.float32)
@@ -232,6 +256,18 @@ class Session:
         self._lock.tryLock(100)
         self._n = itertools.count(1)
         self._mutex = threading.Lock()
+        self._adopted: list = []
+
+    def adopt(self, path: str) -> None:
+        """Take over the folder of a run that is gone (its documents were recovered): locked while this run lives,
+        removed with this session."""
+        from PySide6.QtCore import QLockFile
+        if path == self.path or any(p == path for p, _l in self._adopted):
+            return
+        lock = QLockFile(os.path.join(path, "lock"))
+        lock.setStaleLockTime(0)
+        lock.tryLock(100)
+        self._adopted.append((path, lock))
 
     def folder(self) -> str:
         with self._mutex:
@@ -255,6 +291,13 @@ class Session:
         except Exception:
             pass
         shutil.rmtree(self.path, ignore_errors=True)
+        for path, lock in self._adopted:
+            try:
+                lock.unlock()
+            except Exception:
+                pass
+            shutil.rmtree(path, ignore_errors=True)
+        self._adopted = []
 
 
 def clean_stale(root: str) -> int:

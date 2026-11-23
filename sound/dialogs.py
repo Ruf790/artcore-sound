@@ -673,3 +673,45 @@ class StatsDialog(QDialog):
     def closeEvent(self, ev) -> None:
         self.cancel()
         super().closeEvent(ev)
+
+
+class RecoveryDialog(QDialog):
+    """At the start after a crash: the documents with unsaved changes, each with a check box."""
+
+    def __init__(self, entries, parent=None):
+        import datetime
+        super().__init__(parent)
+        self.entries = list(entries)
+        self.setWindowTitle(t("rc_title"))
+        self.setMinimumWidth(620)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.addWidget(_head(t("rc_title")))
+        lay.addWidget(_hint(t("rc_note")))
+        self.list = QListWidget()
+        for e in self.entries:
+            when = datetime.datetime.fromtimestamp(e.time).strftime("%Y-%m-%d %H:%M") if e.time else ""
+            it = QListWidgetItem(style.icon("fa6s.wave-square"),
+                                 t("rc_item", e.name, fmt_time(e.duration * 1000, 1000, False), e.steps, when))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked)
+            it.setToolTip(e.data.get("path") or "")
+            self.list.addItem(it)
+        lay.addWidget(self.list, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok = bb.button(QDialogButtonBox.Ok)
+        ok.setObjectName("primary")
+        ok.setText(t("rc_restore"))
+        bb.button(QDialogButtonBox.Cancel).setText(t("rc_discard"))
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self._discard)
+        lay.addWidget(bb)
+
+    def _discard(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        from . import APP_TITLE
+        if QMessageBox.question(self, APP_TITLE, t("rc_discard_q")) == QMessageBox.Yes:
+            self.reject()
+
+    def chosen(self) -> list:
+        return [e for i, e in enumerate(self.entries) if self.list.item(i).checkState() == Qt.Checked]

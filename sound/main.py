@@ -354,7 +354,11 @@ def main() -> int:
     app.setWindowIcon(style.app_icon())
     tb = TitleBars(app)
     app.installEventFilter(tb)
-    session = store.Session(config.work_root(cfg))
+    from . import crash, recovery
+    crash.install()
+    root = config.work_root(cfg)
+    lost = recovery.scan(root)                    # unsaved documents of a run that crashed (before they are removed)
+    session = store.Session(root, clean=not lost)
     from .window import MainWindow
     win = MainWindow(cfg, session)
     server = QLocalServer()
@@ -378,6 +382,8 @@ def main() -> int:
     if paths:
         win.open_paths([os.path.abspath(p) for p in paths])
     from PySide6.QtCore import QTimer
+    if lost:
+        QTimer.singleShot(200, lambda: win.offer_recovery(lost))
     QTimer.singleShot(3000, win.maybe_check_updates)
     rc = app.exec()
     server.close()

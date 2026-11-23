@@ -80,6 +80,13 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(30)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
+        self._jkeys: dict = {}                  # document → the journal key last written (recovery.py)
+        self.journal_timer = QTimer(self)
+        self.journal_timer.setInterval(1000)
+        self.journal_timer.timeout.connect(self.write_journals)
+        self.journal_timer.start()
+        from . import crash
+        crash.on_crash.append(lambda: self.write_journals(True))
         geo = cfg.get("geometry")
         if geo:
             from PySide6.QtCore import QByteArray
@@ -89,6 +96,8 @@ class MainWindow(QMainWindow):
     # ── building ──────────────────────────────────────────────
     def _act(self, menu, icon: str, text: str, slot, keys=None) -> QAction:
         a = QAction(style.icon(icon) if icon else QIcon(), text, self)
+        from . import crash
+        a.triggered.connect(lambda _c=False, n=text: crash.note(n))
         a.triggered.connect(lambda _c=False: slot())
         if keys:
             seqs = [QKeySequence(k) for k in (keys if isinstance(keys, (list, tuple)) else [keys])]
@@ -644,7 +653,7 @@ class MainWindow(QMainWindow):
         try:
             info = ff.probe(path)
         except Exception as e:
-            QMessageBox.warning(self, APP_TITLE, t("open_failed", os.path.basename(path), e))
+            QMessageBox.warning(self, APP_TITLE, t("open_failed", os.path.basename(path), human_error(e)))
             QTimer.singleShot(0, self._open_next)
             return
         pos = info.tracks[0].pos
@@ -1293,6 +1302,46 @@ class MainWindow(QMainWindow):
         self.cfg["noise_dir"] = os.path.dirname(path)
         config.save(self.cfg)
         self._toast(t("nr_loaded", os.path.basename(path), f"{prof.get('seconds', 0):.2f}"))
+
+    # ── recovery after a crash (1.0) ──────────────────────────
+    def write_journals(self, force: bool = False) -> None:
+        """The journal of every open document whose piece table, history or markers changed (recovery.py)."""
+        from . import recovery
+        for d in list(self.docs):
+            if not d.history:
+                continue
+            key = recovery.journal_key(d)
+            if not force and self._jkeys.get(id(d)) == key:
+                continue
+            try:
+                recovery.write(d, self.session.path)
+                self._jkeys[id(d)] = key
+            except (OSError, ValueError):
+                pass                                  # a full disk: the next change tries again
+
+    def offer_recovery(self, entries) -> int:
+        """At the start: the unsaved documents of a run that crashed — restore the chosen ones, remove the rest.
+        → how many were restored."""
+        from . import recovery, store
+        from .dialogs import RecoveryDialog
+        dlg = RecoveryDialog(entries, self)
+        chosen = dlg.chosen() if dlg.exec() else []
+        n = 0
+        failed = []
+        for e in chosen:
+            try:
+                d = recovery.restore(e, self.session)
+            except (OSError, ValueError, KeyError, IndexError) as ex:
+                failed.append(f"{e.name}: {human_error(ex)}")
+                continue
+            self.add_doc(d)
+            n += 1
+        store.clean_stale(self.session.root)
+        if failed:
+            QMessageBox.warning(self, APP_TITLE, t("rc_failed", "\n".join(failed)))
+        if n:
+            self._toast(t("rc_done", n))
+        return n
 
     # ── batch processing (1.0) ────────────────────────────────
     def batch_window(self) -> None:

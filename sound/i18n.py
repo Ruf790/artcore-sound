@@ -820,6 +820,30 @@ STRINGS = {
                        "Take a noise sample."),
     "nr_saved":       ("Образец шума сохранён: {0}", "Noise sample saved: {0}"),
     "nr_loaded":      ("Образец шума загружен: {0} ({1} с)", "Noise sample loaded: {0} ({1} s)"),
+    # recovery and errors (1.0)
+    "rc_title":       ("Восстановление документов", "Recover documents"),
+    "rc_note":        ("Программа в прошлый раз закрылась аварийно. Эти документы не были сохранены — их звук и "
+                       "история отмен остались на диске. Отметьте, какие восстановить.",
+                       "The program closed unexpectedly last time. These documents were not saved — their sound and "
+                       "undo history stayed on the disk. Check the ones to recover."),
+    "rc_item":        ("{0} — {1}, правок: {2}, {3}", "{0} — {1}, edits: {2}, {3}"),
+    "rc_restore":     ("Восстановить", "Recover"),
+    "rc_discard":     ("Удалить", "Discard"),
+    "rc_discard_q":   ("Удалить несохранённые документы? Их нельзя будет вернуть.",
+                       "Discard the unsaved documents? They cannot be brought back."),
+    "rc_done":        ("Восстановлено документов: {0}", "Documents recovered: {0}"),
+    "rc_failed":      ("Не удалось восстановить:\n{0}", "Could not recover:\n{0}"),
+    "cr_title":       ("Произошла ошибка", "An error occurred"),
+    "cr_text":        ("Что-то пошло не так. Документы записаны в журнал и восстановятся при следующем запуске, "
+                       "если программа закроется. Отчёт сохранён: {0}. Скопируйте его и пришлите разработчику — это "
+                       "поможет исправить ошибку.",
+                       "Something went wrong. The documents are written to the journal and will be recovered at the "
+                       "next start if the program closes. The report is saved: {0}. Copy it and send it to the "
+                       "developer — it helps fix the error."),
+    "cr_copy":        ("Скопировать отчёт", "Copy the report"),
+    "cr_copied":      ("Скопировано", "Copied"),
+    "cr_folder":      ("Открыть папку", "Open the folder"),
+    "cr_continue":    ("Продолжить", "Continue"),
 }
 
 
