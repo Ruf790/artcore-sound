@@ -257,6 +257,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           ARTCORE_AUDIO: "null"
           PYTHONUNBUFFERED: "1"
+          PYTHONIOENCODING: utf-8
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then export ARTCORE_FFMPEG_DIR="$PWD/ffmpeg/bin"; fi
           mkdir -p stress
@@ -269,8 +270,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           ARTCORE_AUDIO: "null"
+          PYTHONIOENCODING: utf-8
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then export ARTCORE_FFMPEG_DIR="$PWD/ffmpeg/bin"; fi
+          if [ "$RUNNER_OS" = "Windows" ]; then export ARTCORE_FFMPEG_DIR="$PWD/ffmpeg/bin"; export PATH="$PWD/ffmpeg/bin:$PATH"; fi
           ARTCORE_STRESS_REPORT=stress/report.md python tools/screenshots.py stress/shots ru --quick || true
       - uses: actions/upload-artifact@v4
         if: always()

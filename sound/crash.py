@@ -85,7 +85,11 @@ def handle(exc_type, exc, tb, where: str = "") -> str:
         return ""
     text = report(exc_type, exc, tb, where)
     path = write_log(text)
-    sys.stderr.write(text)
+    if sys.stderr is not None:                      # None in the windowed exe
+        try:
+            sys.stderr.write(text)
+        except (OSError, ValueError, UnicodeError):
+            pass
     for fn in list(on_crash):
         try:
             fn()

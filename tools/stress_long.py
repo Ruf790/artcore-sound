@@ -405,6 +405,11 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):                 # a Windows console / CI pipe in cp1252: «→», «×»
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("out")
     ap.add_argument("--minutes", type=float, default=150.0)
