@@ -25,6 +25,8 @@ class RecordDialog(QDialog):
         from .dialogs import _head, _hint
         self.win = win
         self.rec = record.Recorder()
+        from .player import InputMonitor
+        self.monitor = InputMonitor(win.cfg.get("device", ""), win.cfg.get("latency", "low"), win.volume)
         self.cfg = win.cfg.setdefault("record", {}) if isinstance(win.cfg.get("record"), dict) else {}
         win.cfg["record"] = self.cfg
         self._job = None              # what Record was pressed for: (target, doc, a, b)
@@ -90,6 +92,10 @@ class RecordDialog(QDialog):
         trig.addWidget(self.trig)
         trig.addStretch(1)
         form.addRow("", trig)
+        self.mon_on = QCheckBox(t("rec_monitor"))
+        self.mon_on.setToolTip(t("rec_monitor_tip"))
+        self.mon_on.setChecked(bool(self.cfg.get("monitor", False)))      # off by default: no howling
+        form.addRow("", self.mon_on)
         left.addLayout(form)
         self.state_l = QLabel("")
         self.state_l.setObjectName("recOn")
@@ -135,6 +141,7 @@ class RecordDialog(QDialog):
         self.chans.currentIndexChanged.connect(lambda _i: self._reopen())
         self.rate.currentIndexChanged.connect(lambda _i: self._reopen())
         self.target.idToggled.connect(lambda _i, on: on and self._target_changed())
+        self.mon_on.toggled.connect(lambda _on: self._monitor())
         self.timer = QTimer(self)
         self.timer.setInterval(50)
         self.timer.timeout.connect(self._tick)
@@ -208,7 +215,21 @@ class RecordDialog(QDialog):
         ok = dv is not None and self.rec.open(dv, ch, rate)
         if not ok:
             self.state_l.setText(t("rec_open_failed", self.rec.error or t("rec_no_devices")))
+        self._monitor()
         self._update()
+
+    def _monitor(self) -> None:
+        """Hear the input (2.0) or not: the monitor follows the input's rate and channels."""
+        self.cfg["monitor"] = self.mon_on.isChecked()
+        want = self.mon_on.isChecked() and self.rec.state != "closed"
+        self.rec.monitor = None
+        self.monitor.close()
+        if not want:
+            return
+        if self.monitor.open(self.rec.rate, self.rec.channels, self._labels(self.rec.channels)):
+            self.rec.monitor = self.monitor
+        else:
+            self.note.setText(t("rec_monitor_failed", self.monitor.error))
 
     @staticmethod
     def _labels(ch: int) -> list[str]:
@@ -319,6 +340,8 @@ class RecordDialog(QDialog):
         if self.recording():
             self.stop()
         self.timer.stop()
+        self.rec.monitor = None
+        self.monitor.close()
         self.rec.close()
         self.win.cfg["record"] = self.cfg
 

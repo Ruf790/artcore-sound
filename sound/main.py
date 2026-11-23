@@ -55,7 +55,7 @@ def selftest() -> int:
     the 440 Hz tone, a spectrogram tile, markers and regions written into a WAV (cue / labl) and read back and kept
     by an edit, a recording through the null input, and a WASAPI input stream opened (or a clear word that there is
     no input device). 1.0: a batch of 3 files in worker processes of the exe, a long Cyrillic path, the crash
-    journal, the error report."""
+    journal, the error report. 2.0: the listening volume (−12 dB heard, the meters unchanged, the file untouched)."""
     import tempfile
     import time
     import traceback
@@ -201,6 +201,7 @@ def selftest() -> int:
             x.mark_saved()
         win.close()
         _selftest_10(src, session, tmp, lines)
+        _selftest_20(src, session, tmp, lines)
         session.close()
         with open(out, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -423,6 +424,55 @@ def _tp_of(src, rate: int, labels) -> float:
         an.feed(src.read(pos, k))
         pos += k
     return an.result().true_peak
+
+
+def _selftest_20(src, session, tmp: str, lines: list) -> None:
+    """2.0: the listening volume — the null output 12 dB quieter, the meters still the file's level, the file not
+    touched; then the input monitor of the Record window at the same volume."""
+    import time
+
+    import numpy as np
+
+    from . import record
+    from .player import InputMonitor, Player, Volume
+
+    def capture(vol):
+        blocks = []
+        p = Player(volume=vol)
+        p.sink = blocks.append
+        if not p.play(src, 0, src.frames):
+            raise RuntimeError("the null playback")
+        time.sleep(0.5)
+        lv = p.levels().copy()
+        p.stop()
+        y = np.concatenate(blocks[2:-1])
+        return float(np.sqrt(np.mean(np.square(y, dtype=np.float64)))), lv
+
+    before = src.read(0, 65536).copy()
+    r0, lv0 = capture(Volume(0))
+    r1, lv1 = capture(Volume(-12))
+    db = 20 * np.log10(max(1e-12, r1) / max(1e-12, r0))
+    same = float(np.max(np.abs(lv0 - lv1)))
+    lines.append(f"listening volume: −12 dB set → {db:.2f} dB heard; meters differ by {same:.4f}")
+    if abs(db + 12) > 0.2 or same > 0.02 or not np.array_equal(src.read(0, 65536), before):
+        raise RuntimeError("the listening volume")
+    r = record.Recorder()
+    devs = [d for d in record.input_devices() if d.get("null")] or [{"null": True, "name": "null"}]
+    blocks = []
+    m = InputMonitor(volume=Volume(-6))
+    m.sink = blocks.append
+    if not r.open(devs[0], 2, 48000) or not m.open(48000, 2):
+        raise RuntimeError("the input monitor")
+    r.monitor = m
+    time.sleep(0.4)
+    r.monitor = None
+    m.close()
+    r.close()
+    pk = float(np.max(np.abs(np.concatenate(blocks[4:-1])[:, 0]))) if len(blocks) > 6 else 0.0
+    mdb = 20 * np.log10(max(1e-9, pk) / 0.25)
+    lines.append(f"input monitor: −6 dB set → {mdb:.2f} dB heard")
+    if abs(mdb + 6) > 0.3:
+        raise RuntimeError("the input monitor's volume")
 
 
 def main() -> int:

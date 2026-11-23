@@ -10,7 +10,11 @@ keeps less ready (AHEAD_FX), so a slider is heard within a tenth of a second.
 
 The reader also keeps the last frames it prepared (after the effect, before the downmix) in a ring with a running
 frame count; the callback notes how far the sound card has got, so tap(n) gives the n frames being heard now — the
-live spectrum (0.4)."""
+live spectrum (0.4).
+
+The listening volume (2.0) is applied last, in the callback, after the downmix: a change is heard at the next buffer
+(not after the half second the reader keeps ready) and ramps over VOL_RAMP, so moving the slider never clicks. The
+meters and tap() come before it — they show the file's own level, clipping included."""
 from __future__ import annotations
 
 import collections
@@ -111,11 +115,72 @@ def mix_matrix(labels, out_ch: int) -> np.ndarray:
     return m
 
 
+VOL_MIN_DB = -60.0             # the bottom of the listening volume: silence
+VOL_MAX_DB = 0.0
+VOL_RAMP = 0.03                # seconds for a full-scale change of the listening gain (no clicks)
+
+
+class Volume:
+    """The listening volume (2.0): what is heard — playback, the preview of effects, the monitoring of an input —
+    never the file, its saving or render(). One object shared by the player and the input monitor; each output
+    ramps towards gain() on its own (GainRamp), in its audio callback, after the downmix and after the meters."""
+
+    def __init__(self, db: float = 0.0, muted: bool = False):
+        self.db = 0.0
+        self.muted = bool(muted)
+        self.set(db)
+
+    def set(self, db: float | None = None, muted: bool | None = None) -> None:
+        if db is not None:
+            self.db = float(min(VOL_MAX_DB, max(VOL_MIN_DB, float(db))))
+        if muted is not None:
+            self.muted = bool(muted)
+
+    def step(self, ddb: float) -> None:
+        """Louder / quieter by ddb; a step up from silence leaves the bottom, a step up while muted unmutes."""
+        if ddb > 0 and self.muted:
+            self.muted = False
+        self.set(self.db + ddb)
+
+    def gain(self) -> float:
+        if self.muted or self.db <= VOL_MIN_DB:
+            return 0.0
+        return float(10.0 ** (self.db / 20.0))
+
+
+class GainRamp:
+    """Applies a Volume to the blocks of one output, moving at most 1/VOL_RAMP of full scale a second."""
+
+    def __init__(self, volume: Volume | None):
+        self.volume = volume
+        self.g = volume.gain() if volume is not None else 1.0
+
+    def reset(self) -> None:
+        self.g = self.volume.gain() if self.volume is not None else 1.0
+
+    def apply(self, out: np.ndarray, frames: int, rate: int) -> None:
+        if self.volume is None or frames <= 0:
+            return
+        g0, g1 = self.g, self.volume.gain()
+        if g0 == g1:
+            if g1 != 1.0:
+                out[:frames] *= np.float32(g1)
+            return
+        span = max(1.0, abs(g1 - g0) * VOL_RAMP * rate)          # frames the whole change takes
+        k = np.minimum(np.arange(1, frames + 1, dtype=np.float64) / span, 1.0)
+        ramp = (g0 + (g1 - g0) * k).astype(np.float32)
+        out[:frames] *= ramp[:, None]
+        self.g = float(ramp[-1]) if k[-1] < 1.0 else g1
+
+
 class Player:
     """One playback at a time. play(doc, start, end, loop); position() is the frame being heard now."""
 
-    def __init__(self, device: str = "", latency: str = "low"):
+    def __init__(self, device: str = "", latency: str = "low", volume: Volume | None = None):
         self.device_name, self.latency = device, latency
+        self.volume = volume if volume is not None else Volume()
+        self._ramp = GainRamp(self.volume)
+        self.sink = None                     # tests: a callable given each block the null output «plays»
         self.state = "stop"                 # stop | play | pause
         self.doc = None
         self.start = self.end = self.origin = 0
@@ -165,6 +230,7 @@ class Player:
         self._levels = np.zeros(self.doc.channels, np.float32)
         self._tap = np.zeros((TAP, self.doc.channels), np.float32)
         self._tap_w = self._heard = 0
+        self._ramp.reset()
         if not self._open():
             return False
         self._run = True
@@ -281,7 +347,7 @@ class Player:
         # no sound card: play into nothing at the same pace
         self._mix = None
         self.out_channels, self.out_rate, self.backend = doc.channels, doc.rate, "null"
-        self._stream = _NullStream(doc.rate, doc.channels, self._callback, self.finished.set)
+        self._stream = _NullStream(doc.rate, doc.channels, self._callback, self.finished.set, self.sink)
         self._clock = (self._next, time.monotonic(), time.monotonic)
         return True
 
@@ -348,6 +414,7 @@ class Player:
                     self._cur[2] = used + k
         if filled < frames:
             outdata[filled:] = 0
+        self._ramp.apply(outdata, frames, self.out_rate)          # what is heard, not what the meters show
         if first_pos is not None and self._clock is not None:
             try:
                 dac = tinfo.outputBufferDacTime if tinfo is not None else 0.0
@@ -363,11 +430,122 @@ class Player:
             raise StopIteration()
 
 
+class InputMonitor:
+    """Hearing an input while it is recorded or ready (2.0): the recorder's callback pushes each block, the output's
+    callback takes them at the listening volume. At most MAX seconds wait (older ones are dropped), so the delay
+    stays short. Same device and channel rules as the Player; without a sound card a null output at the same pace."""
+
+    MAX = 0.12
+
+    def __init__(self, device: str = "", latency: str = "low", volume: Volume | None = None):
+        self.device_name, self.latency = device, latency
+        self.volume = volume if volume is not None else Volume()
+        self._ramp = GainRamp(self.volume)
+        self._lock = threading.Lock()
+        self._q: collections.deque = collections.deque()
+        self._qframes = 0
+        self._cur = None
+        self._stream = None
+        self._mix = None
+        self.rate = self.channels = 0
+        self.backend = ""
+        self.error = ""
+        self.dropped = 0
+        self.sink = None
+
+    @property
+    def on(self) -> bool:
+        return self._stream is not None
+
+    def open(self, rate: int, channels: int, labels=None) -> bool:
+        self.close()
+        self.error = ""
+        self.rate, self.channels = int(rate), int(channels)
+        self._ramp.reset()
+        labels = labels or (("M",) if channels == 1 else ("L", "R")[:channels])
+        sd = _sd()
+        if sd is not None:
+            dev = find_device(self.device_name)
+            if dev is not None:
+                info = sd.query_devices(dev)
+                maxch = int(info["max_output_channels"])
+                ch = channels if channels <= maxch and channels > 1 else min(2, maxch)
+                try:
+                    extra = None
+                    try:
+                        extra = sd.WasapiSettings(auto_convert=True)
+                    except Exception:
+                        extra = None
+                    self._mix = mix_matrix(labels, ch) if ch != channels else None
+                    self._stream = sd.OutputStream(samplerate=self.rate, channels=ch, dtype="float32", device=dev,
+                                                   latency=self.latency, blocksize=0, callback=self._callback,
+                                                   extra_settings=extra)
+                    self._stream.start()
+                    self.backend = "wasapi"
+                    return True
+                except Exception as e:               # noqa: BLE001
+                    self.error = str(e) or type(e).__name__
+                    self._stream = None
+                    return False
+        self._mix = None
+        self._stream = _NullStream(self.rate, self.channels, self._callback, lambda: None, self.sink)
+        self._stream.start()
+        self.backend = "null"
+        return True
+
+    def push(self, x: np.ndarray) -> None:
+        """A block of the input (frames × channels); called from the input's callback."""
+        if self._stream is None or not len(x):
+            return
+        y = x @ self._mix if self._mix is not None else x
+        with self._lock:
+            self._q.append([np.ascontiguousarray(y, np.float32), 0])
+            self._qframes += len(y)
+            while self._q and self._qframes - len(self._q[0][0]) > self.MAX * max(1, self.rate):
+                self._qframes -= len(self._q.popleft()[0])
+                self.dropped += 1
+
+    def _callback(self, outdata, frames, tinfo, status) -> None:
+        filled = 0
+        with self._lock:
+            while filled < frames:
+                if self._cur is None:
+                    if not self._q:
+                        break
+                    self._cur = self._q.popleft()
+                data, used = self._cur
+                k = min(frames - filled, len(data) - used)
+                outdata[filled:filled + k] = data[used:used + k]
+                filled += k
+                self._qframes -= k
+                if used + k >= len(data):
+                    self._cur = None
+                else:
+                    self._cur[1] = used + k
+        if filled < frames:
+            outdata[filled:] = 0
+        self._ramp.apply(outdata, frames, self.rate)
+
+    def close(self) -> None:
+        st, self._stream = self._stream, None
+        if st is not None:
+            try:
+                st.stop()
+                st.close()
+            except Exception:
+                pass
+        with self._lock:
+            self._q.clear()
+            self._qframes = 0
+            self._cur = None
+
+
 class _NullStream:
     """The same callback, called by a timer at the pace of the sound card that is not there."""
 
-    def __init__(self, rate: int, channels: int, callback, finished):
+    def __init__(self, rate: int, channels: int, callback, finished, sink=None):
         self.rate, self.channels, self.cb, self.finished = rate, channels, callback, finished
+        self.sink = sink
         self._run = False
         self._th = None
         self.blocksize = 1024
@@ -383,6 +561,8 @@ class _NullStream:
         try:
             while self._run:
                 self.cb(buf, self.blocksize, None, None)
+                if self.sink is not None:
+                    self.sink(buf.copy())
                 t_next += self.blocksize / self.rate
                 time.sleep(max(0.0, t_next - time.monotonic()))
         except StopIteration:

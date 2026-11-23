@@ -36,6 +36,7 @@
 - **Метки и регионы** (M, R): флажки на волне тянутся мышью, список справа, Ctrl+← / →; входят в отмену и сдвигаются при правках. Сохраняются в WAV (`cue` + `LIST/adtl`, как Sound Forge), FLAC / Opus (CHAPTER, CUESHEET), MP3 / M4A (главы); главы MKV / MP4 открываются как регионы. Экспорт и импорт — CSV, .cue, метки Audacity.
 - **Запись** (Ctrl+R) со входа WASAPI: индикаторы до записи, пауза, метки, предзапись, старт по уровню, запас диска; поток идёт прямо на диск.
 - **Воспроизведение** через WASAPI — 5.1 играет как 5.1; бегущий курсор, по выделению, по кругу; индикаторы по каналам с удержанием пика.
+- **Громкость прослушивания (2.0):** ползунок с динамиком на транспорте (колесо мыши — по 1 dB, щелчок по динамику — без звука), Ctrl+Alt+↑ / ↓ / M и пункты в меню «Воспроизведение». Меняет только то, что слышно — воспроизведение, предпрослушивание эффектов, прослушивание входа в окне записи, — плавно и на ходу; файл, сохранение и индикаторы (честный уровень файла) не меняются. Запоминается между запусками. В окне записи — галочка «Слушать вход».
 
 ### Пакетная обработка (новое в 1.0)
 ![Пакетная обработка](docs/screenshots/batch_dark.png)
@@ -137,6 +138,9 @@
 | Пауза | Ctrl+Пробел |
 | По кругу | Q |
 | Запись | Ctrl+R |
+| Громче | Ctrl+Alt+↑ |
+| Тише | Ctrl+Alt+↓ |
+| Без звука | Ctrl+Alt+M |
 | **Мышь в окне волны** | |
 | Выделить участок | Перетащить |
 | Расширить выделение до точки | Shift+щелчок |
@@ -179,6 +183,7 @@ An audio editor for Windows in the spirit of Sound Forge.
 - **Processing and effects** with a live preview (loop, sliders heard on the fly, bypass, presets): volume, peak / true-peak and EBU R128 normalization with a true-peak ceiling, fades, reverse, invert, DC offset, trimming silence, sample rate and channels; a parametric and a graphic EQ, compressor, look-ahead limiter with a true-peak ceiling, delay, reverb, tempo and pitch (Rubber Band), noise reduction by a noise sample — the sample saved to and loaded from a file (`.acnoise`) — and click removal.
 - **Analysis:** peak, RMS, LUFS and clipping in the status bar; Statistics per channel (BS.1770-4, matching ffmpeg's ebur128 within 0.1 LU); a spectrum panel and window; a spectrogram view.
 - **Markers and regions** kept through edits and saved in WAV / FLAC / Opus / MP3 / M4A; film chapters open as regions. **Recording** from a WASAPI input; **playback** through WASAPI, 5.1 as 5.1.
+- **Listening volume (2.0):** a speaker and a slider on the transport (mouse wheel 1 dB a step, a click on the speaker mutes), Ctrl+Alt+↑ / ↓ / M and the Transport menu. It changes only what you hear — playback, effect preview, input monitoring in the Record window («Listen to the input») — smoothly and on the fly; never the file, saving or the meters. Kept between runs.
 - **Batch processing (new in 1.0)** — Tools → Batch processing (Ctrl+B): a folder (with subfolders, an extension filter) or a list of files (drag and drop), which track of a video (the default, by language, all); a chain of any Process and Effects steps — added, removed, reordered, switched on and off, set in the same effect windows with presets and a preview of the first 30 s of the first file; the output format and quality (or «as the source»), the same or another folder keeping the subfolders, a name template (`{name}`, `{n}`, `{n:3}`, `{date}`, `{track}`, `{lang}`, a suffix), skip / replace / new name for existing files, tags and markers kept; batches saved as presets (`.acbatch`). It runs in the background in worker processes (half the cores by default), streaming through the disk with the disk space reserved per file; per-file and overall progress, pause, stop (unfinished files removed); a broken file does not stop the batch; a log per file (done / error in plain words, LUFS and peak before and after, time), a summary, a CSV or text report.
 - **Robustness (new in 1.0):** a journal of every document's piece table, undo history and markers — after a crash the next start offers the unsaved documents back with their history; unhandled errors are logged (with the last actions) and shown with «Copy the report»; a full disk mid-operation gives a clear message, leaves the document as it was and removes the partial files; errors in plain words; long paths and Cyrillic names.
 - **Long files:** a 2–3 h 5.1 film opens, draws, edits and processes from disk without memory growth — see `tools/stress_long.py` (a CI job run by hand).
@@ -243,6 +248,9 @@ An audio editor for Windows in the spirit of Sound Forge.
 | Pause | Ctrl+Space |
 | Loop | Q |
 | Record | Ctrl+R |
+| Louder | Ctrl+Alt+↑ |
+| Quieter | Ctrl+Alt+↓ |
+| Mute | Ctrl+Alt+M |
 | **The mouse in the waveform** | |
 | Select a stretch | Drag |
 | Extend the selection to a point | Shift+click |

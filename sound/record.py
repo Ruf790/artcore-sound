@@ -8,6 +8,9 @@ last N seconds before Record are kept and go first into the recording; a level t
 starts with the first block over the threshold (with the pre-roll before it); markers set while recording
 (positions from the recording's start).
 
+The input can also be heard (2.0, off by default — a microphone near the speakers howls): each block goes to a
+player.InputMonitor too, which plays it at the listening volume through the playback device.
+
 Without a sound card (CI, ARTCORE_AUDIO=null) a null input plays a tone (440 Hz at −12 dBFS, 660 Hz on the second
 channel) at the pace of the clock, through the same callback."""
 from __future__ import annotations
@@ -152,6 +155,7 @@ class Recorder:
         self.pre_roll = 0                # frames kept before Record
         self.trigger = None              # linear level that starts the writing (armed), None = at once
         self._folder = ""
+        self.monitor = None              # a player.InputMonitor while the input is heard (2.0)
 
     # ── the input ─────────────────────────────────────────────
     def open(self, device: dict | None, channels: int, rate: int) -> bool:
@@ -203,6 +207,9 @@ class Recorder:
             else:
                 self._q.append(x)
                 self._qframes += len(x)
+        mon = self.monitor
+        if mon is not None:
+            mon.push(x)
         self._wake.set()
 
     def levels(self) -> np.ndarray | None:

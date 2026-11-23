@@ -54,6 +54,9 @@ DEFAULTS = {
     "batch_geometry": "",
     "batch_split":   [],
     "noise_dir":     "",            # where noise samples (*.acnoise) were saved / loaded
+    # 2.0
+    "play_volume_db": 0.0,          # the listening volume (only what is heard, never the file)
+    "play_muted":    False,
 }
 
 RECENT_MAX = 12

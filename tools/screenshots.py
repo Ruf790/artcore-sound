@@ -129,6 +129,7 @@ def main(out: str, lang: str = "ru") -> int:
             shoot_effects(w, out, theme, pump)
             shoot_04(w, out, theme, pump, lang)
         shoot_10(w, out, theme, pump, lang)
+        shoot_20(w, out, theme, pump, lang)
         for x in w.docs:
             x.mark_saved()
         w.close()
@@ -237,6 +238,35 @@ def shoot_04(w, out: str, theme: str, pump, lang: str) -> None:
     rd.reject()
     pump(0.2)
     w.grab().save(os.path.join(out, f"recorded_{theme}.png"))
+
+
+def shoot_20(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0: the listening volume on the transport (while playing, the meters still at the file's level) and the
+    Record window's «Listen to the input»."""
+    from PySide6.QtWidgets import QWidget
+    w.tabs.setCurrentIndex(0)
+    pump(0.2)
+    w.vol.slider.setValue(-140)
+    w.play()
+    pump(1.0)
+    w.grab().save(os.path.join(out, f"volume_{theme}.png"))
+    bar = w.findChild(QWidget, "transport")
+    bar.grab().save(os.path.join(out, f"volume_transport_{theme}.png"))
+    w.vol.button.click()
+    pump(0.3)
+    bar.grab().save(os.path.join(out, f"volume_muted_{theme}.png"))
+    w.vol.button.click()
+    w.stop_play()
+    w.vol.slider.setValue(0)
+    w.record_toggle()
+    pump(0.3)
+    rd = w.rec_dlg
+    rd.mon_on.setChecked(True)
+    pump(0.6)
+    rd.grab().save(os.path.join(out, f"record_monitor_{theme}.png"))
+    rd.mon_on.setChecked(False)
+    rd.reject()
+    pump(0.2)
 
 
 def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:

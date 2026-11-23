@@ -21,7 +21,8 @@ from . import spectrogram as sgm
 from .doc import Document, fmt_time, parse_time
 from .errors import human as human_error
 from .i18n import fmt_bytes, t
-from .player import Player
+from .player import Player, Volume
+from .volui import STEP_DB, VolumeControl
 from .waveview import Meters, Overview, WaveView
 
 UNDO_KEYS = {"open", "new", "cut", "paste", "delete", "silence", "insert silence", "trim", "add marker", "add region",
@@ -46,7 +47,12 @@ class MainWindow(QMainWindow):
         self.cfg, self.session = cfg, session
         self.docs: list[Document] = []
         self.clip = None
-        self.player = Player(cfg.get("device", ""), cfg.get("latency", "low"))
+        self.volume = Volume(cfg.get("play_volume_db", 0.0), cfg.get("play_muted", False))   # what is heard (2.0)
+        self.player = Player(cfg.get("device", ""), cfg.get("latency", "low"), self.volume)
+        self._vol_save = QTimer(self)
+        self._vol_save.setSingleShot(True)
+        self._vol_save.setInterval(700)
+        self._vol_save.timeout.connect(self._save_volume)
         self.bridge = Bridge()
         self.bridge.progress.connect(self._on_progress)
         self.bridge.done.connect(self._on_job_done)
@@ -381,6 +387,12 @@ class MainWindow(QMainWindow):
         self.a_loop.setChecked(self.cfg.get("loop", False))
         m.addSeparator()
         self.a_record = A(m, "fa6s.circle", t("record") + "…", self.record_toggle, "Ctrl+R")
+        m.addSeparator()
+        self.a_vol_up = A(m, "fa6s.volume-high", t("vol_up"), lambda: self.vol.step(STEP_DB), "Ctrl+Alt+Up")
+        self.a_vol_down = A(m, "fa6s.volume-low", t("vol_down"), lambda: self.vol.step(-STEP_DB), "Ctrl+Alt+Down")
+        self.a_mute = A(m, "fa6s.volume-xmark", t("vol_mute_act"), lambda: self.vol.toggle_mute(), "Ctrl+Alt+M")
+        self.a_mute.setCheckable(True)
+        self.a_mute.setChecked(self.volume.muted)
         return mb
 
     def _tool(self, icon: str, tip: str, slot, text: str = "", checkable: bool = False) -> QToolButton:
@@ -491,6 +503,10 @@ class MainWindow(QMainWindow):
         for b in (self.t_start, self.t_rew, self.t_play, self.t_pause, self.t_stop, self.t_ff, self.t_end,
                   self.t_loop, self.t_rec):
             h.addWidget(b)
+        h.addSpacing(10)
+        self.vol = VolumeControl(self.volume)
+        self.vol.changed.connect(self._volume_changed)
+        h.addWidget(self.vol)
         h.addSpacing(14)
         self.counter = QLabel(fmt_time(0, 48000))
         self.counter.setObjectName("counter")
@@ -2223,6 +2239,16 @@ class MainWindow(QMainWindow):
         if paths:
             self.open_paths(paths)
 
+    # ── the listening volume (2.0) ────────────────────────────
+    def _volume_changed(self) -> None:
+        self.a_mute.setChecked(self.volume.muted)
+        self._vol_save.start()
+
+    def _save_volume(self) -> None:
+        self.cfg["play_volume_db"] = round(self.volume.db, 1)
+        self.cfg["play_muted"] = self.volume.muted
+        config.save(self.cfg)
+
     def closeEvent(self, ev) -> None:
         if self.batch_win is not None:
             if self.batch_win._running() and \
@@ -2254,6 +2280,8 @@ class MainWindow(QMainWindow):
         self.spec_panel.cancel()
         self.wave.close_engine()
         self.player.stop()
+        self.cfg["play_volume_db"] = round(self.volume.db, 1)
+        self.cfg["play_muted"] = self.volume.muted
         self.cfg["side_split"] = self.side_split.sizes()
         self.cfg["main_split"] = self.splitter.sizes()
         self.cfg["geometry"] = bytes(self.saveGeometry().toHex()).decode()
