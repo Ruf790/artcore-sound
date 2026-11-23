@@ -267,6 +267,62 @@ def shoot_20(w, out: str, theme: str, pump, lang: str) -> None:
     rd.mon_on.setChecked(False)
     rd.reject()
     pump(0.2)
+    shoot_film(w, out, theme, pump, lang)
+
+
+def shoot_film(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 1: Return to video, the automatic sync with its result, the channel matrix, the dialogue boost, the
+    video window (still frames: no libmpv offscreen), the Film menu."""
+    from sound import filmui, fxui, media, sync
+    film_path = os.path.join(TMP, "Фильм (2024).mkv")
+    if not os.path.exists(film_path):
+        ff("-f", "lavfi", "-i", "testsrc2=s=640x272:r=24000/1001:d=12", "-f", "lavfi", "-i", SONG,
+           "-filter_complex", "[1]pan=5.1|c0=c0|c1=c1|c2=0.7*c0+0.7*c1|c3=0.3*c0|c4=0.5*c0|c5=0.5*c1[a]",
+           "-map", "0:v", "-map", "[a]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-c:a:0", "ac3",
+           "-c:a:1", "aac", "-ac:a:1", "2", "-metadata:s:a:0", "language=rus", "-metadata:s:a:0", "title=Дубляж",
+           "-metadata:s:a:1", "language=eng", "-metadata:s:a:1", "title=Original", "-disposition:a:0", "default",
+           film_path)
+    d = media.open_file(film_path, w.session.folder(), 0)
+    d.add_marker(int(2.0 * d.rate), "Сцена 1" if lang == "ru" else "Scene 1")
+    w.add_doc(d)
+    pump(0.3)
+    rd = filmui.ReturnDialog(d, w.cfg, w)
+    rd.show()
+    pump(0.2)
+    rd.grab().save(os.path.join(out, f"return_video_{theme}.png"))
+    rd.reject()
+    ad = filmui.AutoSyncDialog(w, d)
+    ad.show()
+    est = sync.Estimate(offset=-0.4213, L=25 / (24000 / 1001), confidence=0.93, peak=41.0, windows=14, agree=13,
+                        residual_ms=4.0)
+    ad.show_estimate(est)
+    pump(0.2)
+    ad.grab().save(os.path.join(out, f"auto_sync_{theme}.png"))
+    ad.reject()
+    for key in ("chmatrix", "dialog"):
+        dlg = fxui.EffectDialog(w, key, d, 0, d.frames, True)
+        if key == "chmatrix":
+            for k, v in dlg.eff.presets["cm_p_swap_c_lfe"].items():
+                dlg._set(k, v)
+        dlg.show()
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"fx_{key}_{theme}.png"))
+        dlg.reject()
+    w.video_window_toggle()
+    vw = w.video_win
+    d.cursor = int(5.0 * d.rate)
+    t0 = time.time()
+    while getattr(vw.pic, "frames", 1) < 1 and time.time() - t0 < 10:
+        pump(0.1)
+    pump(0.3)
+    vw.grab().save(os.path.join(out, f"video_window_{theme}.png"))
+    vw.close()
+    pump(0.1)
+    menu = next(a.menu() for a in w.menuBar().actions() if a.menu() is not None and a.text() in ("Фильм", "Film"))
+    menu.popup(w.mapToGlobal(w.rect().topLeft()))
+    pump(0.3)
+    menu.grab().save(os.path.join(out, f"film_menu_{theme}.png"))
+    menu.hide()
 
 
 def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:

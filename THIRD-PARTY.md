@@ -5,6 +5,8 @@ ArtCore Sound is free software under the GNU GPL v3 (see LICENSE). It ships with
 | Component | License | Where |
 |---|---|---|
 | **FFmpeg** (BtbN/FFmpeg-Builds, GPL build: LAME, Opus, Vorbis, soxr, Rubber Band …) | GPL v3 (the build as a whole) | https://ffmpeg.org · https://github.com/BtbN/FFmpeg-Builds |
+| **mpv** — `libmpv-2.dll`, Windows build by shinchiro/mpv-winbuild-cmake (the video window) | GPL v2+ (this build), parts LGPL | https://mpv.io · https://github.com/shinchiro/mpv-winbuild-cmake |
+| **python-mpv** | GPL v2+ or LGPL v2.1+ | https://github.com/jaseg/python-mpv |
 | **PortAudio** (bundled with python-sounddevice) | MIT-style | http://www.portaudio.com |
 | **python-sounddevice** | MIT | https://github.com/spatialaudio/python-sounddevice |
 | **Qt 6 / PySide6** | LGPL v3 | https://www.qt.io · https://wiki.qt.io/Qt_for_Python |

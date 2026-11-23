@@ -402,7 +402,7 @@ class AutoSyncDialog(QDialog):
                  t("sy_res_conf", round(est.confidence * 100), est.agree, est.windows, f"{est.residual_ms:.0f}")]
         if est.confidence < 0.35:
             lines.append(t("sy_res_low"))
-        self.res.setText("\n".join(lines))
+        self.res.setText("<br>".join(lines))
         self.b_apply.setEnabled(True)
 
     def _apply(self) -> None:
