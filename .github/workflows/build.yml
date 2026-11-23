@@ -260,6 +260,8 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then export ARTCORE_FFMPEG_DIR="$PWD/ffmpeg/bin"; fi
+          # the working files on the runner's own temp disk (D: on Windows — C: there is far slower)
+          export ARTCORE_SOUND_TEMP="${{ runner.temp }}/ArtCoreSound"
           mkdir -p stress
           set -o pipefail
           python tools/stress_long.py stress --minutes "${{ inputs.minutes }}" ${{ inputs.dts && '--dts' || '' }} 2>&1 | tee stress/log.txt
