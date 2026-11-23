@@ -293,16 +293,6 @@ class Session:
         os.makedirs(p, exist_ok=True)
         return p
 
-    def used_bytes(self) -> int:
-        total = 0
-        for dp, _, fs in os.walk(self.path):
-            for f in fs:
-                try:
-                    total += os.path.getsize(os.path.join(dp, f))
-                except OSError:
-                    pass
-        return total
-
     def close(self) -> None:
         try:
             self._lock.unlock()

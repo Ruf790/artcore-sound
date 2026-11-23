@@ -26,12 +26,12 @@ STRINGS = {
                        "<a href='https://github.com/Ruf790/artcore-sound'>github.com/Ruf790/artcore-sound</a>"),
     "quit":           ("Выход", "Quit"),
     "open":           ("Открыть", "Open"),
-    "open_tip":       ("Открыть файл (Ctrl+O)", "Open a file (Ctrl+O)"),
+    "open_tip":       ("Открыть файл", "Open a file"),
     "recent":         ("Последние файлы", "Recent files"),
     "recent_none":    ("Пусто", "Empty"),
     "recent_clear":   ("Очистить список", "Clear the list"),
     "save":           ("Сохранить", "Save"),
-    "save_tip":       ("Сохранить (Ctrl+S)", "Save (Ctrl+S)"),
+    "save_tip":       ("Сохранить", "Save"),
     "save_as":        ("Сохранить как", "Save as"),
     "save_sel":       ("Сохранить выделение как", "Save the selection as"),
     "close":          ("Закрыть", "Close"),
@@ -143,7 +143,7 @@ STRINGS = {
                        "Downmix / upmix with FFmpeg's matrix. The whole file."),
     # transport
     "play":           ("Воспроизвести", "Play"),
-    "play_tip":       ("Воспроизвести / стоп (Пробел)", "Play / stop (Space)"),
+    "play_tip":       ("Воспроизвести / стоп", "Play / stop"),
     "play_all":       ("Воспроизвести весь файл", "Play the whole file"),
     "pause":          ("Пауза", "Pause"),
     "stop":           ("Стоп", "Stop"),
@@ -607,7 +607,7 @@ STRINGS = {
     "rec_name":       ("Запись {0}", "Recording {0}"),
     "rec_done":       ("Записано {0}", "Recorded {0}"),
     "rec_drops":      ("пропусков: {0}", "dropped blocks: {0}"),
-    "rec_stop_tip":   ("Остановить запись (Ctrl+R)", "Stop recording (Ctrl+R)"),
+    "rec_stop_tip":   ("Остановить запись", "Stop recording"),
     # errors in plain words (1.0)
     "err_disk_full":  ("Не хватает места на диске ({0}). Освободите место или выберите другую папку — документ не "
                        "изменён.", "The disk is full ({0}). Free some space or choose another folder — the document "
@@ -844,6 +844,24 @@ STRINGS = {
     "cr_copied":      ("Скопировано", "Copied"),
     "cr_folder":      ("Открыть папку", "Open the folder"),
     "cr_continue":    ("Продолжить", "Continue"),
+    # hotkeys (1.0)
+    "ks_title":       ("Горячие клавиши", "Hotkeys"),
+    "ks_filter":      ("Найти команду или клавишу…", "Find a command or a key…"),
+    "ks_command":     ("Команда", "Command"),
+    "ks_keys":        ("Клавиши", "Keys"),
+    "ks_mouse":       ("Мышь в окне волны", "The mouse in the waveform"),
+    "key_space":      ("Пробел", "Space"),
+    "ks_m_select":    ("Выделить участок|Перетащить", "Select a stretch|Drag"),
+    "ks_m_extend":    ("Расширить выделение до точки|Shift+щелчок", "Extend the selection to a point|Shift+click"),
+    "ks_m_all":       ("Выделить весь файл|Двойной щелчок", "Select the whole file|Double-click"),
+    "ks_m_wheel":     ("Прокрутка по времени|Колесо", "Scroll in time|Wheel"),
+    "ks_m_zoom":      ("Масштаб у курсора мыши|Ctrl+колесо", "Zoom about the mouse|Ctrl+wheel"),
+    "ks_m_marker":    ("Передвинуть метку или край региона|Перетащить флажок", "Move a marker or a region's edge|Drag its flag"),
+    "ks_m_rename":    ("Переименовать метку|Двойной щелчок по флажку", "Rename a marker|Double-click its flag"),
+    "ks_m_overview":  ("Перейти к месту файла|Щелчок по обзору вверху", "Go to a place of the file|Click the overview at the top"),
+    "room_made":      ("Мало места на диске: шаги «Повторить» забыты, их файлы удалены ({1}); свободно {0}",
+                       "Low on disk space: the Redo steps are forgotten and their files deleted ({1}); {0} free"),
+    "ks_m_drop":      ("Открыть файлы|Перетащить в окно", "Open files|Drop them on the window"),
 }
 
 

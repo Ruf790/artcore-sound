@@ -7,7 +7,6 @@ from __future__ import annotations
 import bisect
 import itertools
 import math
-import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -15,7 +14,6 @@ import numpy as np
 from . import store
 from .store import BASE, FACTOR, Source
 
-Piece = tuple            # (Source, offset in the source, frames)
 RAW_SPP = BASE * FACTOR  # frames per column below which the view reads the frames themselves
 
 _marker_ids = itertools.count(1)
@@ -87,12 +85,6 @@ def remap_markers(ms, a: int, b: int, n: int, mode: str = "cut") -> tuple:
         if e > s:
             out.append(Marker(m.id, m.name, s, e))
     return sort_markers(out)
-
-
-def scale_markers(ms, factor: float) -> tuple:
-    """Every position × factor (the whole document at another rate / tempo)."""
-    return sort_markers(Marker(m.id, m.name, int(round(m.pos * factor)),
-                               None if m.end is None else int(round(m.end * factor))) for m in ms)
 
 
 @dataclass
@@ -586,6 +578,20 @@ class Document:
                 out.add(src)
         return out
 
+    def discard_redo(self) -> bool:
+        """Forget the steps after the current one (what Redo would bring back); their own sources become orphans
+        (free_orphans deletes them). → whether there was anything to forget."""
+        if not self.can_redo():
+            return False
+        dropped = self.history[self.pos + 1:]
+        del self.history[self.pos + 1:]
+        keep = {id(src) for h in self.history for src, _o, _n in h.pieces}
+        for h in dropped:
+            for src, _o, _n in h.pieces:
+                if src.kind == "data" and id(src) not in keep and all(src is not x for x in self.orphans):
+                    self.orphans.append(src)
+        return True
+
     def free_orphans(self, live: set | None = None) -> int:
         """Delete the working files of the orphans (see _push) that no source in `live` (ids: the clipboard, the
         other documents) and no state of this history uses. → how many were deleted."""
@@ -649,13 +655,3 @@ def parse_time(text: str, rate: int) -> int | None:
         sec = sec * 60 + p
     return int(round(sec * rate))
 
-
-def folder_size(path: str) -> int:
-    total = 0
-    for dp, _, fs in os.walk(path):
-        for f in fs:
-            try:
-                total += os.path.getsize(os.path.join(dp, f))
-            except OSError:
-                pass
-    return total

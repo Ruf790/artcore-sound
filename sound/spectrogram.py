@@ -145,10 +145,6 @@ def quantize(db: np.ndarray) -> np.ndarray:
     return np.clip(q, 1, 255).astype(np.uint8)
 
 
-def level_of(q: int) -> float:
-    return Q_LO + (q - 1) / 254.0 * (Q_HI - Q_LO)
-
-
 # ── reading a fixed copy of the pieces ────────────────────────
 class PieceReader:
     """Frames of a piece list that covers document frames [base, base + Σn) — zeros outside."""

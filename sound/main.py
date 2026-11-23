@@ -31,11 +31,16 @@ class TitleBars(QObject):
     """Every window and dialog gets a title bar in the colours of the theme when it is first shown."""
 
     def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow() and \
+        et = ev.type()
+        if et == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow() and \
                 not obj.property("acTitled"):
             obj.setProperty("acTitled", True)
-            from . import style
+            from . import style, winstate
             winint.dark_title_bar(int(obj.winId()), style.IS_DARK)
+            winstate.restore(obj)                       # the size and place it had last time (1.0)
+        elif et == QEvent.Hide and isinstance(obj, QWidget) and obj.isWindow() and obj.property("acTitled"):
+            from . import winstate
+            winstate.save(obj)
         return False
 
 
@@ -49,7 +54,8 @@ def selftest() -> int:
     and filled, tempo by its length, pitch by FFT) and a live preview through the null output. 0.4: the spectrum of
     the 440 Hz tone, a spectrogram tile, markers and regions written into a WAV (cue / labl) and read back and kept
     by an edit, a recording through the null input, and a WASAPI input stream opened (or a clear word that there is
-    no input device)."""
+    no input device). 1.0: a batch of 3 files in worker processes of the exe, a long Cyrillic path, the crash
+    journal, the error report."""
     import tempfile
     import time
     import traceback
@@ -194,6 +200,7 @@ def selftest() -> int:
         for x in win.docs:
             x.mark_saved()
         win.close()
+        _selftest_10(src, session, tmp, lines)
         session.close()
         with open(out, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -323,6 +330,90 @@ def _selftest_04(path: str, session, tmp: str, lines: list) -> None:
         raise RuntimeError("recording")
 
 
+def _selftest_10(src: str, session, tmp: str, lines: list) -> None:
+    """1.0: a batch of 3 files in 2 worker processes of this exe (normalize to −16 LUFS + limiter → FLAC, a
+    subfolder kept, a broken file reported), a path longer than 260 characters with Cyrillic names, the crash
+    journal written and read back, and the error report."""
+    import shutil
+    import time
+
+    from . import analysis, batch, crash, ff, media, recovery
+    root = os.path.join(tmp, "batch")
+    shutil.rmtree(root, ignore_errors=True)
+    inp = os.path.join(root, "Вход", "Подпапка")
+    os.makedirs(inp)
+    for i, (f, ch) in enumerate(((330, 2), (550, 1), (770, 6))):
+        p = os.path.join(inp if i else os.path.dirname(inp), f"Тон {i + 1}.wav")
+        r = ff.run([ff.ffmpeg(), "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    f"sine=f={f}:d=3:r=48000", "-ac", str(ch), "-c:a", "pcm_s16le", p], 60)
+        if r.returncode != 0:
+            raise RuntimeError("making the batch files failed")
+    with open(os.path.join(inp, "битый.wav"), "wb") as f:
+        f.write(b"RIFF....WAVEnot a wave" * 20)
+    out = os.path.join(root, "Выход")
+    job = batch.Job(batch.Source("folder", os.path.join(root, "Вход"), True),
+                    [batch.Step("normalize", {"mode": "loudness", "target": -16.0, "ceiling": -1.0}),
+                     batch.Step("limit", {"ceiling": -1.0})],
+                    batch.Output("flac", "24", "other", out, True, "{n:2} {name}", ""), workers=2)
+    t0 = time.monotonic()
+    r = batch.Runner(job, os.path.join(tmp, "work"))
+    r.start()
+    if not r.wait(300):
+        r.cancel()
+        raise RuntimeError("the batch did not finish")
+    st = {x.status for x in r.tasks}
+    oks = [x for x in r.tasks if x.status == "ok"]
+    lines.append(f"batch: {len(r.tasks)} tasks in {time.monotonic() - t0:.1f} s, 2 worker processes: "
+                 + ", ".join(f"{os.path.basename(x.src)} {x.status}"
+                             + (f" {x.after.get('lufs')} LUFS" if x.status == "ok" else f" ({x.error})")
+                             for x in r.tasks))
+    if len(oks) != 3 or "error" not in st or not os.path.isfile(os.path.join(out, "Подпапка", "04 Тон 3.flac")):
+        raise RuntimeError("the batch")
+    for x in oks:
+        sess = store_session(os.path.join(tmp, "check"))
+        d = media.open_file(x.out, sess.folder())
+        lufs = analysis.analyze(d).integrated
+        sess.close()
+        if abs(lufs + 16.0) > 0.3:
+            raise RuntimeError(f"batch: {x.out} at {lufs:.2f} LUFS")
+    deep = tmp
+    while len(deep) < 280:
+        deep = os.path.join(deep, "Очень длинное имя папки с кириллицей")
+    os.makedirs(deep, exist_ok=True)
+    lp = os.path.join(deep, "Фильм — дорожка 5.1.ac3")
+    shutil.copy(src, lp)
+    d = media.open_file(lp, session.folder())
+    media.save(d, os.path.join(deep, "Копия.flac"), "flac", "24")
+    ok_long = os.path.isfile(os.path.join(deep, "Копия.flac"))
+    lines.append(f"a path of {len(lp)} characters: opened {d.frames} frames, saved: {ok_long}")
+    if not ok_long:
+        raise RuntimeError("the long path")
+    d.delete(0, 4800)
+    d.add_marker(9600, "Метка")
+    recovery.write(d, session.path)
+    e = recovery.Entry(session.path, d.folder, recovery.to_dict(d, session.path))
+    sess2 = store_session(os.path.join(tmp, "work2"))
+    back = recovery.restore(e, sess2)
+    same = back.frames == d.frames and len(back.markers) == 1 and back.can_undo()
+    lines.append(f"recovery journal: {back.frames} frames, {len(back.history)} steps, markers {len(back.markers)}")
+    sess2._adopted = []                                   # the session folder still belongs to this run
+    sess2.close()
+    if not same:
+        raise RuntimeError("the recovery journal")
+    try:
+        raise ValueError("a test error")
+    except ValueError:
+        path = crash.write_log(crash.report(*sys.exc_info()))
+    lines.append(f"error report: {os.path.basename(path)}")
+    if not path or "ValueError: a test error" not in open(path, encoding="utf-8").read():
+        raise RuntimeError("the error report")
+
+
+def store_session(path: str):
+    from . import store
+    return store.Session(path)
+
+
 def _tp_of(src, rate: int, labels) -> float:
     from . import analysis
     an = analysis.Analyzer(rate, labels, loudness=False, true_peak=True)
@@ -354,7 +445,8 @@ def main() -> int:
     app.setWindowIcon(style.app_icon())
     tb = TitleBars(app)
     app.installEventFilter(tb)
-    from . import crash, recovery
+    from . import crash, recovery, winstate
+    winstate.cfg = cfg
     crash.install()
     root = config.work_root(cfg)
     lost = recovery.scan(root)                    # unsaved documents of a run that crashed (before they are removed)

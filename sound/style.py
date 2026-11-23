@@ -133,15 +133,6 @@ def _icon_png(name: str, color: str, file: str, px: int = 12) -> str:
     return path.replace("\\", "/")
 
 
-def section_css() -> str:
-    """The grey header of a block (a track, the filters …) — a light bar in the classic look."""
-    if LOOK == "classic":
-        return (f"QFrame#section {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {SECTION}, "
-                f"stop:1 {SECTION2}); border-top: 1px solid {BORDER}; border-bottom: 1px solid {BORDER}; }}")
-    return (f"QFrame#section {{ background: {PANEL2}; border-top: 1px solid {BORDER};"
-            f"border-bottom: 1px solid {BORDER}; }}")
-
-
 def stylesheet() -> str:
     pal = palette()
     qss = QSS + (CLASSIC_QSS if LOOK == "classic" else "") + APP_QSS
@@ -286,9 +277,9 @@ QListWidget#recent::item {{ padding: 9px 12px; border-radius: 9px; }}
 QListWidget#recent::item:hover {{ background: {PANEL2}; }}
 QListWidget#recent::item:selected {{ background: {PANEL2}; color: {TEXT}; }}
 QCheckBox {{ spacing: 9px; }}
-QCheckBox::indicator {{ width: 17px; height: 17px; border-radius: 5px; border: 1px solid {BORDER}; background: {PANEL2}; }}
-QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
-QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url(%CHECK%); }}
+QCheckBox::indicator, QListWidget::indicator, QTreeWidget::indicator {{ width: 17px; height: 17px; border-radius: 5px; border: 1px solid {BORDER}; background: {PANEL2}; }}
+QCheckBox::indicator:hover, QListWidget::indicator:hover, QTreeWidget::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:checked, QListWidget::indicator:checked, QTreeWidget::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url(%CHECK%); }}
 QLineEdit, QComboBox {{ background: {PANEL2}; border: 1px solid {BORDER}; border-radius: 8px; padding: 6px 9px; }}
 QLineEdit:focus, QComboBox:focus {{ border-color: {ACCENT}; }}
 QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {BORDER}; selection-background-color: {ACCENT}; }}
@@ -391,11 +382,11 @@ QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {B
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url(%UP%); width: 8px; height: 8px; }}
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url(%DOWN%); width: 8px; height: 8px; }}
 QCheckBox {{ spacing: 7px; }}
-QCheckBox::indicator {{ width: 13px; height: 13px; border-radius: 2px; border: 1px solid {MUTED}; background: {FIELD}; }}
-QCheckBox::indicator:hover {{ border-color: {ACCENT}; background: {BTN_HOT}; }}
-QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url(%CHECK%); }}
-QCheckBox::indicator:disabled {{ border-color: {BORDER}; background: {PANEL2}; }}
-QCheckBox::indicator:checked:disabled {{ background: {MUTED}; border-color: {MUTED}; }}
+QCheckBox::indicator, QListWidget::indicator, QTreeWidget::indicator {{ width: 13px; height: 13px; border-radius: 2px; border: 1px solid {MUTED}; background: {FIELD}; }}
+QCheckBox::indicator:hover, QListWidget::indicator:hover, QTreeWidget::indicator:hover {{ border-color: {ACCENT}; background: {BTN_HOT}; }}
+QCheckBox::indicator:checked, QListWidget::indicator:checked, QTreeWidget::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url(%CHECK%); }}
+QCheckBox::indicator:disabled, QListWidget::indicator:disabled, QTreeWidget::indicator:disabled {{ border-color: {BORDER}; background: {PANEL2}; }}
+QCheckBox::indicator:checked:disabled, QListWidget::indicator:checked:disabled, QTreeWidget::indicator:checked:disabled {{ background: {MUTED}; border-color: {MUTED}; }}
 QRadioButton::indicator {{ width: 13px; height: 13px; border-radius: 7px; border: 1px solid {MUTED}; background: {FIELD}; }}
 QGroupBox {{ border-radius: 0; }}
 QTabWidget::pane {{ border-radius: 0; }}
@@ -432,6 +423,10 @@ QLineEdit#timeField {{ font-family: "Consolas", "DejaVu Sans Mono", monospace; }
 QToolButton#play {{ border-radius: 17px; padding: 7px; }}
 QToolButton#play:disabled {{ background: {PANEL2}; }}
 QTabBar#plTabs {{ background: {BG}; }}
+QListWidget, QTreeWidget, QTableWidget, QTextBrowser {{ background: {PANEL}; color: {TEXT}; border: 1px solid {BORDER};
+    alternate-background-color: {ALT}; selection-background-color: {SEL}; selection-color: {SEL_TEXT}; }}
+QTableWidget {{ gridline-color: {BORDER}; }}
+QTableCornerButton::section {{ background: {PANEL}; border: none; }}
 QTableWidget#stats {{ background: {PANEL}; color: {TEXT}; border: 1px solid {BORDER}; gridline-color: {BORDER};
                       alternate-background-color: {ALT}; selection-background-color: {SEL};
                       selection-color: {SEL_TEXT}; font-family: "Consolas", "DejaVu Sans Mono", monospace; }}

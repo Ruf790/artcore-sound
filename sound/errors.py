@@ -10,13 +10,6 @@ DISK_FULL_WIN = (39, 112)            # ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL
 FFMPEG_DISK_FULL = ("no space left on device", "disk full", "not enough space")
 
 
-class DiskFull(OSError):
-    """Raised (or recognised) when a write ran out of disk space; `path` is where it was writing."""
-
-    def __init__(self, path: str = ""):
-        super().__init__(errno.ENOSPC, "No space left on device", path)
-
-
 def is_disk_full(e: BaseException) -> bool:
     if isinstance(e, OSError):
         if e.errno in (errno.ENOSPC, errno.EDQUOT) or getattr(e, "winerror", None) in DISK_FULL_WIN:

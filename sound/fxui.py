@@ -1000,6 +1000,8 @@ class EffectDialog(QDialog):
                 self.status.setText(t("fx_preparing", int(rp.frac * 100)))
         if self.chain is not None and self.chain.error:
             self.status.setText(t("fx_failed", self.chain.error))
+        if self.key == "declick" and not self.b_find.isEnabled():
+            self.found.setText(t("dc_searching", int(getattr(self, "_scan_frac", 0.0) * 100)))
         if self.b_preview.isChecked() and self.chain is not None and self.win.player.state != "play":
             self.stop_preview()
 

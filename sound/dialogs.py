@@ -225,7 +225,6 @@ class ValueDialog(QDialog):
         return parse_time(e.text(), int(e.property("rate")))
 
 
-CURVES = ("linear", "log", "exp", "scurve")
 RATES = (8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000)
 
 
@@ -715,3 +714,65 @@ class RecoveryDialog(QDialog):
 
     def chosen(self) -> list:
         return [e for i, e in enumerate(self.entries) if self.list.item(i).checkState() == Qt.Checked]
+
+
+class KeysDialog(QDialog):
+    """ArtCore Sound → Hotkeys: every shortcut of the menus (made from the actions themselves), a filter, and
+    what the mouse does in the waveform."""
+
+    def __init__(self, menubar, parent=None):
+        from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+        from . import keys
+        super().__init__(parent)
+        self.setWindowTitle(t("ks_title"))
+        self.setMinimumSize(640, 620)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.addWidget(_head(t("ks_title")))
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText(t("ks_filter"))
+        self.filter.setClearButtonEnabled(True)
+        self.filter.textChanged.connect(self._filter)
+        lay.addWidget(self.filter)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels([t("ks_command"), t("ks_keys")])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.rows = keys.table(menubar)
+        last = None
+        for menu, cmd, k in self.rows:
+            if menu != last:
+                head = QTreeWidgetItem([menu, ""])
+                f = head.font(0)
+                f.setBold(True)
+                head.setFont(0, f)
+                head.setFlags(Qt.ItemIsEnabled)
+                self.tree.addTopLevelItem(head)
+                last = menu
+            it = QTreeWidgetItem(["    " + cmd, k])
+            self.tree.addTopLevelItem(it)
+        head = QTreeWidgetItem([t("ks_mouse"), ""])
+        f = head.font(0)
+        f.setBold(True)
+        head.setFont(0, f)
+        self.tree.addTopLevelItem(head)
+        for key in keys.MOUSE:
+            what, _sep, how = t(key).partition("|")
+            self.tree.addTopLevelItem(QTreeWidgetItem(["    " + what, how]))
+        self.tree.resizeColumnToContents(0)
+        self.tree.setColumnWidth(0, max(self.tree.columnWidth(0) + 20, 360))
+        lay.addWidget(self.tree, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.button(QDialogButtonBox.Close).setText(t("close"))
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _filter(self, text: str) -> None:
+        q = text.strip().lower()
+        for i in range(self.tree.topLevelItemCount()):
+            it = self.tree.topLevelItem(i)
+            if it.text(1) == "" and not it.text(0).startswith("    "):
+                it.setHidden(bool(q))                          # group heads only without a filter
+                continue
+            it.setHidden(bool(q) and q not in it.text(0).lower() and q not in it.text(1).lower())

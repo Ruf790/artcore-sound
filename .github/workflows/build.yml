@@ -1,5 +1,7 @@
 # Builds ArtCoreSound.exe + Setup.exe on Windows; runs the tests on Linux (ffmpeg, offscreen Qt, no sound card).
 # Every push / PR: artifacts on the run page (Actions → run → Artifacts).
+# The long-film check (tools/stress_long.py, ~2.5 h 5.1) runs only by hand: Actions → Build → Run workflow →
+# «stress» on; its report is in the run's artifacts and summary.
 # Publishing a release (Releases → Draft a new release → tag 0.1.0 → Publish):
 # the installer and a portable zip are built and attached to that release.
 name: Build
@@ -11,6 +13,23 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      stress:
+        description: "Run the long-film check (tools/stress_long.py)"
+        type: boolean
+        default: true
+      minutes:
+        description: "Length of the test film, minutes"
+        default: "150"
+      dts:
+        description: "Add a DTS track to the film"
+        type: boolean
+        default: true
+      stress_os:
+        description: "Runner for the long-film check"
+        type: choice
+        options: [windows-latest, ubuntu-latest]
+        default: windows-latest
 
 permissions:
   contents: write
@@ -31,10 +50,16 @@ jobs:
             libxcb-keysyms1 libxcb-image0 libxcb-render-util0 libxcb-xinerama0 libegl1
       - name: Python packages
         run: python -m pip install -r requirements.txt pytest
+      - name: A small disk for the disk-full test (8 MB tmpfs)
+        run: |
+          sudo mkdir -p /mnt/small
+          sudo mount -t tmpfs -o size=8m tmpfs /mnt/small
+          sudo chmod 777 /mnt/small
       - name: Tests (offscreen Qt, real files made by ffmpeg, the null sound output)
         env:
           QT_QPA_PLATFORM: offscreen
           ARTCORE_AUDIO: "null"
+          ARTCORE_SMALL_DISK: /mnt/small
         run: python -m pytest -q tests
       - name: Screenshots (dark and light)
         if: always()
@@ -42,11 +67,20 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           ARTCORE_AUDIO: "null"
         run: python tools/screenshots.py shots
+      - name: Screenshots at 150 % (High DPI)
+        if: always()
+        env:
+          QT_QPA_PLATFORM: offscreen
+          ARTCORE_AUDIO: "null"
+          QT_SCALE_FACTOR: "1.5"
+        run: python tools/screenshots.py shots/150 ru --quick
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: screenshots-${{ github.sha }}
-          path: shots/*.png
+          path: |
+            shots/*.png
+            shots/150/*.png
 
   windows:
     needs: tests
@@ -191,3 +225,59 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" installer/* --clobber --repo "${{ github.repository }}"
+
+  stress:
+    # by hand only (Run workflow → stress): a ~2.5 h 5.1 film opened, drawn, edited, analysed, processed and saved
+    if: github.event_name == 'workflow_dispatch' && inputs.stress
+    runs-on: ${{ inputs.stress_os || 'windows-latest' }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ffmpeg libportaudio2 libxcb-cursor0 libxkbcommon-x11-0 libegl1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Python packages
+        run: python -m pip install -r requirements.txt psutil
+      - name: Download FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/fetch_ffmpeg.py
+      - name: The long-film check
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          ARTCORE_AUDIO: "null"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then export ARTCORE_FFMPEG_DIR="$PWD/ffmpeg/bin"; fi
+          mkdir -p stress
+          set -o pipefail
+          python tools/stress_long.py stress --minutes "${{ inputs.minutes }}" ${{ inputs.dts && '--dts' || '' }} 2>&1 | tee stress/log.txt
+          cat stress/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: The report as a picture
+        if: always()
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          ARTCORE_AUDIO: "null"
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then export ARTCORE_FFMPEG_DIR="$PWD/ffmpeg/bin"; fi
+          ARTCORE_STRESS_REPORT=stress/report.md python tools/screenshots.py stress/shots ru --quick || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress-${{ github.sha }}
+          path: |
+            stress/report.md
+            stress/report.json
+            stress/log.txt
+            stress/shots/stress_report_*.png

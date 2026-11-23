@@ -103,7 +103,6 @@ class WaveView(QWidget):
         self._sg_timer.timeout.connect(self._sg_arrived)
         self.tilesReady.connect(self._sg_timer.start)
         self._mdrag = None                   # dragging a marker: {id, part, grab, pos, end, moved}
-        self.hover_marker = None
 
     def sizeHint(self) -> QSize:
         return QSize(900, 420)

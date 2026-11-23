@@ -1,38 +1,149 @@
 # ArtCore Sound
 
-Аудиоредактор для Windows: волна по каналам, правка с неограниченной отменой, обработка и эффекты. Шестая программа семейства ArtCore — рядом с [ArtCore Convert](https://github.com/Ruf790/artcore-convert), [ArtCore Player](https://github.com/Ruf790/artcore-player), [ArtCore Music](https://github.com/Ruf790/artcore-music), ArtCore Client и ArtCore Music Remote.
+Аудиоредактор для Windows в духе Sound Forge: волна по каналам до 5.1 и 7.1, правка с неограниченной отменой, обработка, эффекты с предпрослушиванием, анализ, спектр и спектрограмма, метки и регионы, запись и пакетная обработка. Шестая программа семейства ArtCore — рядом с [ArtCore Convert](https://github.com/Ruf790/artcore-convert), [ArtCore Player](https://github.com/Ruf790/artcore-player), [ArtCore Music](https://github.com/Ruf790/artcore-music), ArtCore Client и ArtCore Music Remote.
 
-*An audio editor for Windows in the spirit of Sound Forge. English below.*
+*An audio editor for Windows in the spirit of Sound Forge. [English below](#english).*
 
-## Возможности (0.4)
+![Главное окно](docs/screenshots/main_dark.png)
 
-- **Открытие** через FFmpeg: WAV, FLAC, MP3, AAC / M4A, AC-3, E-AC-3, DTS, Opus, OGG, WMA, APE, WavPack и звук из видео (MKV, MP4, AVI, TS …). В файле с несколькими дорожками программа спрашивает, какую открыть (кодек, каналы, язык, название). Файлы и папки можно перетащить в окно; несколько файлов — вкладки.
-- **Сохранение:** WAV 16 / 24 / 32 бит float (больше 4 ГБ — RF64), FLAC 16 / 24 бит, MP3 (CBR, VBR V0 / V2), AAC (M4A), Opus, AC-3. «Сохранить» пишет в тот же формат, что был открыт; для звука из видео и DTS спрашивает формат. «Сохранить выделение как…». 16 бит — с дизерингом. MP3 сводится в стерео, AC-3 — в 5.1, частота подгоняется, если формат её не принимает (об этом пишет диалог). Теги переносятся.
-- **Волна:** каналы отдельными дорожками (моно, стерео, 5.1, 7.1 — с подписями L R C LFE Ls Rs), масштаб от всего файла до отдельных сэмплов (точки и стебли), линейка времени, шкала dB, обзорная полоса всего файла сверху (рамка — видимая часть, щелчок — переход), отметки клиппинга.
-- **Мышь и клавиши:** щелчок — курсор, протяжка — выделение (с автопрокруткой у края), Shift+щелчок — расширить, двойной щелчок — всё; колесо — прокрутка, Ctrl+колесо — масштаб у мыши; ↑ / ↓ — крупнее / мельче, Ctrl+↑ — весь файл, Ctrl+↓ — выделение во весь экран; Home / End, ← / →; поля «Начало / Конец / Длина» редактируются (`1:02.5`, `62.5`, `48000 smp`).
+## Возможности
+
+### Файлы
+- **Открытие** через FFmpeg: WAV, FLAC, MP3, AAC / M4A, AC-3, E-AC-3, DTS, TrueHD, Opus, OGG, WMA, APE, WavPack, ALAC и звук из видео (MKV, MP4, AVI, TS, M2TS, MOV …). В файле с несколькими дорожками программа спрашивает, какую открыть (кодек, каналы, язык, название). Файлы и папки можно перетащить в окно, несколько файлов открываются вкладками. «Открыть с помощью → ArtCore Sound» в Проводнике для всех этих форматов.
+- **Сохранение:** WAV 16 / 24 / 32 бит float (больше 4 ГБ — RF64), FLAC 16 / 24 бит, MP3 (CBR, VBR V0 / V2), AAC (M4A), Opus, AC-3. «Сохранить» пишет в тот формат, что был открыт; для звука из видео и DTS спрашивает. «Сохранить выделение как…», «Сохранить регионы как отдельные файлы…». 16 бит — с дизерингом; MP3 сводится в стерео, AC-3 — в 5.1, частота подгоняется под формат (диалог об этом пишет). Теги, метки и главы переносятся. Запись идёт через временный файл — старый файл цел, если что-то пошло не так.
+
+### Волна и правка
+- **Волна:** каналы отдельными дорожками (моно, стерео, 5.1, 7.1 — с подписями L R C LFE Ls Rs), масштаб от всего файла до отдельных сэмплов (точки и стебли), линейка времени, шкала dB, обзорная полоса всего файла, отметки клиппинга. На экранах 125 / 150 % волна рисуется с колонкой на каждый физический пиксель.
+- **Мышь и клавиши:** щелчок — курсор, протяжка — выделение (с автопрокруткой), Shift+щелчок — расширить, двойной щелчок — всё; колесо — прокрутка, Ctrl+колесо — масштаб у мыши; поля «Начало / Конец / Длина» редактируются (`1:02.5`, `62.5`, `48000 smp`). Полный список — в окне «Горячие клавиши» (F1) и [ниже](#горячие-клавиши).
 - **Правка:** вырезать, копировать, вставить (поверх выделения или в курсор), вставить как новый файл, удалить, заменить тишиной, вставить тишину, обрезать по выделению. Вставка из файла с другой частотой или числом каналов переводится через FFmpeg (soxr).
-- **Отмена и повтор без ограничений** и список «История правок» с переходом на любой шаг. Изменения хранятся на диске: вырезать / вставить / удалить вообще не копируют звук, а обработка записывает только изменённый кусок.
-- **Обработка** (выделения или всего файла): громкость; нормализация по пику (sample или true peak) и по громкости EBU R128 — цели −23 / −16 / −14 LUFS или своя, с потолком true peak (если потолок не дал дотянуть до цели, программа об этом скажет); нарастание и затухание (линейное, быстрое, медленное, S-образное), реверс, инверсия, «Убрать DC offset»; «Обрезать тишину в начале и конце» (порог и запас; только правка списка кусков — звук не переписывается); частота дискретизации, каналы (моно / стерео / 5.1), стерео → моно (смешать / только левый / только правый), моно → стерео.
-- **Анализ:** в строке состояния — пик, RMS, громкость (LUFS) и клиппинг выделения или всего файла: пик сразу, остальное считается в фоне и запоминается. «Инструменты → Статистика» (Ctrl+I) — таблица по каналам и общая: пик, true peak (4× передискретизация), минимум и максимум, RMS, DC offset, число клиппированных сэмплов; громкость по ITU-R BS.1770-4 / EBU R128 — integrated, диапазон громкости (LRA), максимум momentary и short-term (K-фильтр, блоки 400 мс через 100 мс, пороги −70 LUFS и −10 LU, LFE не учитывается, тылы с весом 1.41). Результаты сверены с `ffmpeg -af ebur128` (расхождение ≤ 0.1 LU). Любая длина, кусками, с отменой.
-- **Эффекты** (меню «Эффекты», кнопки «Эквалайзер» и «Шумоподавление» на панели) — к выделению или ко всему файлу, с предпрослушиванием: «Прослушать» играет выделение по кругу через эффект, ползунки меняют звук на ходу, «Обход» включает и выключает эффект для сравнения, индикаторы уровня показывают обработанный звук. Пресеты встроенные и свои. «Применить» — с прогрессом и отменой, одним шагом отмены; фильм 2–3 ч в 5.1 обрабатывается кусками без роста памяти. Любое число каналов.
-  - **Параметрический эквалайзер** — 7 полос (срез НЧ / ВЧ, полки, колокола; RBJ-биквады), график АЧХ, точки которого тянутся мышью (колесо — добротность); **графический** — 10 октавных полос ±12 dB.
-  - **Компрессор** — порог, степень, мягкое колено, атака, восстановление, усиление на выходе, связь каналов; кривая и индикатор подавления. **Лимитер** — потолок в том числе по true peak, упреждение (look-ahead), восстановление; выход не превышает потолок.
-  - **Задержка** — время в мс или в долях такта по BPM, обратная связь, сухой / мокрый, пинг-понг, срез НЧ и ВЧ в петле. **Реверберация** — алгоритмическая (сеть из 8 линий задержки, точное время затухания RT60): размер, затухание, предзадержка, демпфирование ВЧ, ширина, LFE остаётся сухим. У обоих — «Оставить хвост»: эффект продлевается за конец выделения и подмешивается к звуку дальше.
-  - **Темп и тон** — темп без смены тона (%), тон без смены темпа (полутоны и центы), с сохранением формант; через Rubber Band в FFmpeg (запасной путь — atempo). Длина меняется; прослушивание сначала просчитывает кусок вперёд.
-  - **Шумоподавление** по образцу шума («Взять образец шума» с выделения) — спектральный гейт: подавление, чувствительность, сглаживание по частоте и времени, атака и восстановление; режим «слушать только удаляемый шум». **Удаление щелчков** — поиск по ошибке AR-предсказания, заполнение AR-интерполяцией; «Найти щелчки» показывает число и отмечает их на волне до применения.
-- **Спектр** (новое в 0.4): панель внизу окна (F6, сворачивается) — спектр выделения (без выделения — одно окно FFT у курсора), а во время воспроизведения — живой спектр того, что звучит, вместе с эффектом в предпрослушивании. «Инструменты → Спектр…» (Ctrl+Shift+F) — большое окно для выделения или всего файла. Метод Уэлча по всему выделению кусками (фильм тоже — с прогрессом и отменой, память не растёт); FFT 512…65536, окна Ханна, Блэкмана-Харриса и flat-top (уровень синуса читается в dBFS с учётом окна), ось частот лин / лог, диапазон dB, каналы по отдельности или сумма, сглаживание 1/3 и 1/6 октавы. Под мышью — частота, уровень каждого канала и нота (A4 = 440 Гц), главный пик отмечен. Данные — в буфер обмена или CSV.
-- **Спектрограмма** (новое в 0.4): вид документа «Волна / Спектрограмма / Волна + спектрограмма» (меню «Вид», кнопки на панели, Alt+1…3, F7) — по каналам, с той же линейкой, выделением, курсорами и масштабом. Считается только видимая часть, тайлами в фоне, с кэшем в памяти (LRU, 64 МБ); пока тайл не готов — видна волна; после правки пересчитываются только тайлы, где звук изменился. Настройки: размер FFT, шкала частот лин / лог / мел, диапазон dB, палитра для тёмной и светлой темы; палитра и диапазон меняются без пересчёта. Слева — шкала частот.
-- **Метки и регионы** (новое в 0.4, меню «Метки»): M — метка у курсора (во время воспроизведения — где играет, без остановки), R — регион из выделения; зелёные флажки и полосы регионов на полосе под линейкой и на обзорной полосе; флажок перетаскивается мышью, двойной щелчок — переименовать; выделение прилипает к меткам; Ctrl+← / Ctrl+→ — предыдущая / следующая. Список справа под индикаторами: имя, начало, конец, длина; двойной щелчок — переход / выделить регион, F2 — переименовать, Del — удалить. Метки входят в отмену и сдвигаются при правках: метки внутри удалённого куска удаляются (на краю — остаются на месте разреза), регионы обрезаются по оставшемуся звуку, при смене темпа и частоты позиции масштабируются; копирование и вставка переносят метки вместе со звуком. Сохраняются в файл: WAV — `cue ` + `LIST/adtl` (labl, ltxt) как в Sound Forge, FLAC / Opus — теги CHAPTER (и CUESHEET во FLAC), MP3 / M4A — главы; читаются обратно, главы MKV / MP4 открываются как регионы. Экспорт и импорт списка — CSV и .cue (и метки Audacity). «Сохранить регионы как отдельные файлы…».
-- **Запись** (новое в 0.4): красная кнопка на транспорте (Ctrl+R) открывает окно «Запись» — вход WASAPI (каналы и частота устройства), куда писать (новый файл, в текущий по курсору, вместо выделения), индикаторы входа ещё до записи, время, пропуски, свободное место на диске и сколько его хватит; пауза, стоп, метка (M), предзапись N секунд, старт по уровню. Запись идёт потоком на диск в отдельном потоке — многочасовая запись не растит память; результат — один шаг отмены.
-- **Воспроизведение** через WASAPI — 5.1 играет как 5.1 на Sound Blaster Z; бегущий курсор (окно следует за ним), по выделению, по кругу, пауза; Пробел — играть / стоп, стоп возвращает курсор. Индикаторы уровня по каналам с удержанием пика и лампой клиппинга.
-- **Длинные файлы:** звук держится на диске (memmap float32), пики построены по уровням заранее — фильм 2–3 ч в 5.1 открывается и рисуется без нагрузки на память (тест: 6 мин 5.1 — пик памяти ~7 МБ). Рабочие файлы — в `%TEMP%\ArtCoreSound` (папка меняется в Настройках), удаляются при выходе; после сбоя — при следующем запуске.
-- **Оформление** как у ArtCore Convert: тёмная и светлая тема (или как в Windows), классический или современный стиль, иконки Font Awesome, интерфейс на русском и английском. Автообновление через GitHub Releases.
+- **Отмена и повтор без ограничений**, список «История правок» с переходом на любой шаг. Изменения хранятся на диске: вырезать / вставить / удалить не копируют звук, обработка записывает только изменённый кусок. Когда ветка «Повторить» отбрасывается новой правкой, её файлы сразу удаляются; если для длинной операции не хватает места, программа сама забывает шаги «Повторить» и скажет об этом.
 
-Дальше по плану: 1.0 — пакетная обработка папки (цепочка: нормализация, эффекты, обрезка тишины → сохранить в формат), проверка на фильме 2–3 ч в 5.1, полировка.
+### Обработка и эффекты
+- **Обработка** (выделения или всего файла): громкость; нормализация по пику (sample или true peak) и по громкости EBU R128 — цели −23 / −16 / −14 LUFS или своя, с потолком true peak; нарастание и затухание (линейное, быстрое, медленное, S-образное), реверс, инверсия, DC offset; обрезка тишины в начале и конце; частота дискретизации, каналы (моно / стерео / 5.1), стерео → моно (смешать / левый / правый), моно → стерео.
+- **Эффекты с предпрослушиванием:** «Прослушать» играет выделение по кругу через эффект, ползунки меняют звук на ходу, «Обход» сравнивает с исходным, индикаторы показывают обработанный звук. Пресеты встроенные и свои. Любое число каналов, фильм 2–3 ч в 5.1 обрабатывается кусками без роста памяти.
+  - **Параметрический эквалайзер** (7 полос, график с точками, которые тянутся мышью) и **графический** (10 октавных полос).
+  - **Компрессор** (порог, степень, мягкое колено, атака, восстановление, связь каналов) и **лимитер** (потолок в том числе по true peak, упреждение).
+  - **Задержка** (мс или доли такта по BPM, пинг-понг, фильтры в петле) и **реверберация** (сеть из 8 линий задержки, точное RT60) — с «Оставить хвост».
+  - **Темп и тон** через Rubber Band с сохранением формант.
+  - **Шумоподавление** по образцу шума (спектральный гейт; режим «слушать удаляемый шум»). Образец сохраняется в файл (`.acnoise`) и загружается — для пакета и следующих сеансов. **Удаление щелчков** — поиск по ошибке AR-предсказания и AR-интерполяция, щелчки отмечаются на волне до применения.
+
+### Анализ
+- В строке состояния — пик, RMS, громкость (LUFS) и клиппинг выделения или всего файла (считается в фоне). «Инструменты → Статистика» (Ctrl+I): по каналам и общая — пик, true peak (4×), минимум и максимум, RMS, DC, клиппинг; громкость по ITU-R BS.1770-4 / EBU R128 — integrated, LRA, максимум momentary и short-term (сверено с `ffmpeg -af ebur128`, ≤ 0.1 LU).
+- **Спектр:** панель внизу (F6) — спектр выделения или живой спектр того, что играет; большое окно (Ctrl+Shift+F) — метод Уэлча по всему выделению, FFT 512…65536, окна Ханна / Блэкмана-Харриса / flat-top, лин / лог, сглаживание 1/3 и 1/6 октавы, частота, уровень и нота под мышью, CSV.
+- **Спектрограмма:** вид «Волна / Спектрограмма / Волна + спектрограмма» (Alt+1…3, F7) — тайлами в фоне с кэшем, шкала лин / лог / мел, палитры для обеих тем.
+
+### Метки, регионы, запись
+- **Метки и регионы** (M, R): флажки на волне тянутся мышью, список справа, Ctrl+← / →; входят в отмену и сдвигаются при правках. Сохраняются в WAV (`cue` + `LIST/adtl`, как Sound Forge), FLAC / Opus (CHAPTER, CUESHEET), MP3 / M4A (главы); главы MKV / MP4 открываются как регионы. Экспорт и импорт — CSV, .cue, метки Audacity.
+- **Запись** (Ctrl+R) со входа WASAPI: индикаторы до записи, пауза, метки, предзапись, старт по уровню, запас диска; поток идёт прямо на диск.
+- **Воспроизведение** через WASAPI — 5.1 играет как 5.1; бегущий курсор, по выделению, по кругу; индикаторы по каналам с удержанием пика.
+
+### Пакетная обработка (новое в 1.0)
+![Пакетная обработка](docs/screenshots/batch_dark.png)
+
+«Инструменты → Пакетная обработка…» (Ctrl+B) — отдельное окно, редактор при этом остаётся доступен.
+- **Источник:** папка (с подпапками или без, фильтр расширений) или список файлов (перетаскиванием файлов и папок). Для видео — какую дорожку брать: по умолчанию, по языку (`rus, ru`) или все, каждую в свой файл.
+- **Цепочка шагов** — всё из меню «Обработка» и «Эффекты»: громкость, нормализация (LUFS с потолком true peak, пик, true peak), DC offset, обрезка тишины, нарастание и затухание по краям (в мс), каналы, частота, эквалайзеры, компрессор, лимитер, задержка, реверберация, темп и тон, шумоподавление по файлу образца шума, удаление щелчков. Шаги добавляются, удаляются, переставляются (кнопками или перетаскиванием), включаются галочкой. Параметры — в тех же окнах эффектов с пресетами, а предпрослушивание идёт по первым 30 секундам первого файла.
+- **Сохранение:** формат и качество как в «Сохранить как» (или «как у исходника»); папка та же или другая с сохранением структуры подпапок; имя по шаблону `{name}`, `{n}` / `{n:3}`, `{date}`, `{track}`, `{lang}` плюс суффикс (пример имени показывается сразу); если файл есть — новое имя «имя (2)», пропустить или заменить; теги и метки сохраняются.
+- **Пакеты** (источник + цепочка + сохранение) сохраняются как пресеты (JSON, `.acbatch`) и открываются из файла.
+- **Выполнение:** в фоне, без вкладок; несколько файлов одновременно — каждый в своём процессе (по умолчанию половина ядер), звук идёт потоком через диск, память почти не растёт, а место на диске резервируется под каждый файл. Прогресс по файлу и общий с оценкой оставшегося времени, пауза, остановка — недописанные файлы удаляются. Битый файл не останавливает пакет. Журнал по каждому файлу: готово / ошибка (понятным языком), LUFS и пик до и после, время; итог; отчёт в CSV (для Excel) или текстом; «Открыть папку».
+
+### Надёжность (новое в 1.0)
+- **Восстановление после сбоя.** Звук документа и так на диске, поэтому программа ведёт журнал таблицы кусков, истории отмен, меток и путей (`doc.json` в рабочей папке, атомарно). Если программа упала или её закрыли принудительно, при следующем запуске она предложит восстановить несохранённые документы — со всей историей отмен.
+- **Необработанные ошибки** пишутся в лог (`%APPDATA%\ArtCoreSound\crash`: версия, Windows, трассировка, последние действия), а окно «Произошла ошибка» даёт «Скопировать отчёт». Падения внутри библиотек ловит faulthandler.
+- **Нехватка места посреди операции:** понятное сообщение, документ не меняется, недописанные рабочие и выходные файлы удаляются.
+- Ошибки — человеческим языком: «нет доступа (файл занят)», «файл повреждён», «слишком длинный путь». Длинные пути (больше 260 символов) и имена с кириллицей поддерживаются.
+
+### Длинные файлы
+Звук держится на диске (memmap float32), пики построены по уровням заранее, поэтому фильм 2–3 ч в 5.1 открывается, рисуется, правится и обрабатывается без роста памяти. Проверка — `tools/stress_long.py` (фильм 2,5 ч 5.1 с AC-3, E-AC-3 и DTS; в CI — отдельная задача по кнопке):
+
+<!-- stress -->
+<!-- /stress -->
+
+### Оформление
+Как у ArtCore Convert: тёмная и светлая тема (или как в Windows), классический или современный стиль, иконки Font Awesome, интерфейс на русском и английском. Окно запоминает панели, режим вида, разделители, размеры диалогов и последние настройки. Автообновление через GitHub Releases.
+
+## Горячие клавиши
+
+<!-- hotkeys:ru -->
+| Команда | Клавиши |
+|---|---|
+| **ArtCore Sound** | |
+| Настройки | Ctrl+, |
+| Горячие клавиши | F1 |
+| Выход | Ctrl+Q |
+| **Файл** | |
+| Открыть | Ctrl+O |
+| Сохранить | Ctrl+S |
+| Сохранить как | Ctrl+Shift+S |
+| Закрыть | Ctrl+W |
+| Закрыть все | Ctrl+Shift+W |
+| **Правка** | |
+| Отменить | Ctrl+Z |
+| Повторить | Ctrl+Y / Ctrl+Shift+Z |
+| Вырезать | Ctrl+X |
+| Копировать | Ctrl+C |
+| Вставить | Ctrl+V |
+| Вставить как новый файл | Ctrl+E |
+| Удалить | Del |
+| Обрезать по выделению | Ctrl+T |
+| Заменить тишиной | Ctrl+L |
+| Выделить всё | Ctrl+A |
+| Снять выделение | Esc |
+| Выделить до начала | Shift+Home |
+| Выделить до конца | Shift+End |
+| **Метки** | |
+| Добавить метку | M |
+| Регион из выделения | R |
+| Предыдущая метка | Ctrl+← |
+| Следующая метка | Ctrl+→ |
+| **Вид** | |
+| Крупнее | ↑ / Ctrl+= |
+| Мельче | ↓ / Ctrl+- |
+| Весь файл | Ctrl+↑ |
+| Выделение во весь экран | Ctrl+↓ |
+| До сэмплов (1:1) | Ctrl+Shift+↑ |
+| Вид документа → Волна | Alt+1 |
+| Вид документа → Спектрограмма | Alt+2 |
+| Вид документа → Волна + спектрограмма | Alt+3 |
+| Панель спектра | F6 |
+| В начало | Home |
+| В конец | End |
+| Назад | ← |
+| Вперёд | → |
+| **Инструменты** | |
+| Статистика | Ctrl+I |
+| Спектр | Ctrl+Shift+F |
+| Спектрограмма вкл / выкл | F7 |
+| Пакетная обработка | Ctrl+B |
+| **Воспроизведение** | |
+| Воспроизвести | Пробел |
+| Воспроизвести весь файл | Shift+Пробел |
+| Пауза | Ctrl+Пробел |
+| По кругу | Q |
+| Запись | Ctrl+R |
+| **Мышь в окне волны** | |
+| Выделить участок | Перетащить |
+| Расширить выделение до точки | Shift+щелчок |
+| Выделить весь файл | Двойной щелчок |
+| Прокрутка по времени | Колесо |
+| Масштаб у курсора мыши | Ctrl+колесо |
+| Передвинуть метку или край региона | Перетащить флажок |
+| Переименовать метку | Двойной щелчок по флажку |
+| Перейти к месту файла | Щелчок по обзору вверху |
+| Открыть файлы | Перетащить в окно |
+<!-- /hotkeys:ru -->
+
+## Скриншоты
+
+| | |
+|---|---|
+| ![Эквалайзер](docs/screenshots/fx_eq_dark.png) | ![Спектрограмма](docs/screenshots/wave_spectrogram_dark.png) |
+| ![Статистика](docs/screenshots/statistics_light.png) | ![Сохранение пакета](docs/screenshots/batch_output_light.png) |
+| ![Горячие клавиши](docs/screenshots/hotkeys_dark.png) | ![Восстановление](docs/screenshots/recovery_dark.png) |
 
 ## Установка
 
-Скачайте `ArtCoreSound-Setup-X.Y.Z.exe` в [Releases](https://github.com/Ruf790/artcore-sound/releases) — FFmpeg уже внутри. Есть и переносная версия (`ArtCoreSound-portable.zip`: настройки рядом с программой). Windows 10 / 11, 64 бит.
+Скачайте `ArtCoreSound-Setup-X.Y.Z.exe` в [Releases](https://github.com/Ruf790/artcore-sound/releases) — FFmpeg уже внутри. Есть переносная версия (`ArtCoreSound-portable.zip`: настройки в папке `Data` рядом с программой). Windows 10 / 11, 64 бит.
 
 ## Сборка
 
@@ -40,10 +151,91 @@
 build.bat
 ```
 
-Нужны Python 3.12 / 3.13 (64 бит) и Inno Setup 6.3+. Скрипт ставит зависимости, скачивает FFmpeg (BtbN, GPL), собирает exe (PyInstaller) и установщик. Тесты: `python -m pytest tests` (нужен ffmpeg в PATH).
+Нужны Python 3.12 / 3.13 (64 бит) и Inno Setup 6.3+. Скрипт ставит зависимости, скачивает FFmpeg (BtbN, GPL), собирает exe (PyInstaller) и установщик. Тесты: `python -m pytest tests` (нужен ffmpeg в PATH). Скриншоты: `python tools/screenshots.py <папка>`. Проверка на длинном фильме: `python tools/stress_long.py <папка> --minutes 150 --dts`. Таблица клавиш для README: `python tools/hotkeys_md.py --readme`.
 
 ## English
 
-An audio editor for Windows: opens anything FFmpeg reads (sound from video included) and saves WAV 16 / 24 / 32 float, FLAC, MP3, AAC, Opus and AC-3. Waveform per channel (mono to 7.1) with a time ruler, a dB scale and an overview strip; zoom from the whole file down to single samples; cut, copy, paste, delete, silence, trim with unlimited undo kept on disk; gain, peak / true-peak and EBU R128 loudness normalization (−23 / −16 / −14 LUFS or custom, with a true-peak ceiling), fades, reverse, invert, DC offset removal, trimming the silence at both ends (piece-table only), sample rate and channel conversion, stereo → mono (mix / left / right) and mono → stereo; effects with a live preview (loop, sliders heard on the fly, bypass, the meters after the effect; built-in and own presets): a 7-band parametric EQ with a draggable response graph and a 10-band graphic EQ, a compressor and a look-ahead limiter with a true-peak ceiling, delay (ms or note values, ping-pong, filters in the loop) and an algorithmic reverb (FDN, exact RT60) with «keep the tail», tempo and pitch through Rubber Band, noise reduction by a noise sample (spectral gate, «listen to the removed noise») and click removal (AR detection and interpolation, clicks marked on the wave) — any channel count, long 5.1 films in chunks; analysis in the status bar (peak, RMS, LUFS, clipping, measured in the background) and Tools → Statistics (per channel: peak, true peak, min / max, RMS, DC, clipped samples; integrated loudness, LRA, max momentary / short-term per BS.1770-4, matching ffmpeg's ebur128 within 0.1 LU); WASAPI playback with a moving cursor, selection and loop playback, and peak meters; (0.4) a spectrum panel and window (Welch over the whole selection, 512…65536 FFT, Hann / Blackman-Harris / flat-top, lin / log axis, per channel or summed, octave smoothing, frequency / level / note under the mouse, the live spectrum while playing, CSV), a spectrogram view (wave / spectrogram / both; visible tiles computed in the background with a bounded cache; lin / log / mel, palettes), markers and regions (M / R, dragged and renamed on the wave, a list, Ctrl+← / →, kept through edits and undo, saved as WAV cue / labl, Vorbis chapters, MP3 / M4A chapters, film chapters opened as regions, CSV / .cue lists, regions saved as separate files) and recording from a WASAPI input (ready monitoring, pause, markers, pre-roll, level trigger, streamed to disk, one undo step). Long films in 5.1 stay on disk (memmap) with precomputed peak levels. Dark and light themes, Russian and English.
+An audio editor for Windows in the spirit of Sound Forge.
+
+- **Files:** opens anything FFmpeg reads, sound from video included (a dialog picks the track); saves WAV 16 / 24 / 32 float (RF64 past 4 GB), FLAC, MP3, AAC, Opus and AC-3 with tags, markers and chapters, through a temporary file. «Open with» for every supported format.
+- **Waveform and editing:** a lane per channel up to 7.1, zoom from the whole file to single samples (a column per device pixel at 125 / 150 %), an overview strip; cut, copy, paste, delete, silence, trim; unlimited undo kept on disk, with an undo history list. A redo branch that an edit throws away frees its files at once; short of disk space before a long job, the program forgets the redo steps itself and says so.
+- **Processing and effects** with a live preview (loop, sliders heard on the fly, bypass, presets): volume, peak / true-peak and EBU R128 normalization with a true-peak ceiling, fades, reverse, invert, DC offset, trimming silence, sample rate and channels; a parametric and a graphic EQ, compressor, look-ahead limiter with a true-peak ceiling, delay, reverb, tempo and pitch (Rubber Band), noise reduction by a noise sample — the sample saved to and loaded from a file (`.acnoise`) — and click removal.
+- **Analysis:** peak, RMS, LUFS and clipping in the status bar; Statistics per channel (BS.1770-4, matching ffmpeg's ebur128 within 0.1 LU); a spectrum panel and window; a spectrogram view.
+- **Markers and regions** kept through edits and saved in WAV / FLAC / Opus / MP3 / M4A; film chapters open as regions. **Recording** from a WASAPI input; **playback** through WASAPI, 5.1 as 5.1.
+- **Batch processing (new in 1.0)** — Tools → Batch processing (Ctrl+B): a folder (with subfolders, an extension filter) or a list of files (drag and drop), which track of a video (the default, by language, all); a chain of any Process and Effects steps — added, removed, reordered, switched on and off, set in the same effect windows with presets and a preview of the first 30 s of the first file; the output format and quality (or «as the source»), the same or another folder keeping the subfolders, a name template (`{name}`, `{n}`, `{n:3}`, `{date}`, `{track}`, `{lang}`, a suffix), skip / replace / new name for existing files, tags and markers kept; batches saved as presets (`.acbatch`). It runs in the background in worker processes (half the cores by default), streaming through the disk with the disk space reserved per file; per-file and overall progress, pause, stop (unfinished files removed); a broken file does not stop the batch; a log per file (done / error in plain words, LUFS and peak before and after, time), a summary, a CSV or text report.
+- **Robustness (new in 1.0):** a journal of every document's piece table, undo history and markers — after a crash the next start offers the unsaved documents back with their history; unhandled errors are logged (with the last actions) and shown with «Copy the report»; a full disk mid-operation gives a clear message, leaves the document as it was and removes the partial files; errors in plain words; long paths and Cyrillic names.
+- **Long files:** a 2–3 h 5.1 film opens, draws, edits and processes from disk without memory growth — see `tools/stress_long.py` (a CI job run by hand).
+- Dark and light themes, a classic and a modern look, Russian and English; the window remembers its panels, view, splitters, dialog sizes and last settings; automatic updates through GitHub Releases.
+
+### Hotkeys
+
+<!-- hotkeys:en -->
+| Command | Keys |
+|---|---|
+| **ArtCore Sound** | |
+| Settings | Ctrl+, |
+| Hotkeys | F1 |
+| Quit | Ctrl+Q |
+| **File** | |
+| Open | Ctrl+O |
+| Save | Ctrl+S |
+| Save as | Ctrl+Shift+S |
+| Close | Ctrl+W |
+| Close all | Ctrl+Shift+W |
+| **Edit** | |
+| Undo | Ctrl+Z |
+| Redo | Ctrl+Y / Ctrl+Shift+Z |
+| Cut | Ctrl+X |
+| Copy | Ctrl+C |
+| Paste | Ctrl+V |
+| Paste as a new file | Ctrl+E |
+| Delete | Del |
+| Trim to the selection | Ctrl+T |
+| Silence | Ctrl+L |
+| Select all | Ctrl+A |
+| Select none | Esc |
+| Select to the start | Shift+Home |
+| Select to the end | Shift+End |
+| **Markers** | |
+| Add a marker | M |
+| A region of the selection | R |
+| Previous marker | Ctrl+← |
+| Next marker | Ctrl+→ |
+| **View** | |
+| Zoom in | ↑ / Ctrl+= |
+| Zoom out | ↓ / Ctrl+- |
+| Whole file | Ctrl+↑ |
+| Zoom to the selection | Ctrl+↓ |
+| Down to samples (1:1) | Ctrl+Shift+↑ |
+| Document view → Waveform | Alt+1 |
+| Document view → Spectrogram | Alt+2 |
+| Document view → Waveform + spectrogram | Alt+3 |
+| Spectrum panel | F6 |
+| Go to the start | Home |
+| Go to the end | End |
+| Rewind | ← |
+| Forward | → |
+| **Tools** | |
+| Statistics | Ctrl+I |
+| Spectrum | Ctrl+Shift+F |
+| Spectrogram on / off | F7 |
+| Batch processing | Ctrl+B |
+| **Transport** | |
+| Play | Space |
+| Play the whole file | Shift+Space |
+| Pause | Ctrl+Space |
+| Loop | Q |
+| Record | Ctrl+R |
+| **The mouse in the waveform** | |
+| Select a stretch | Drag |
+| Extend the selection to a point | Shift+click |
+| Select the whole file | Double-click |
+| Scroll in time | Wheel |
+| Zoom about the mouse | Ctrl+wheel |
+| Move a marker or a region's edge | Drag its flag |
+| Rename a marker | Double-click its flag |
+| Go to a place of the file | Click the overview at the top |
+| Open files | Drop them on the window |
+<!-- /hotkeys:en -->
 
 License: GNU GPL v3. Third-party components: [THIRD-PARTY.md](THIRD-PARTY.md).

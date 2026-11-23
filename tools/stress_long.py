@@ -338,6 +338,7 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
             mem.peak()[0])
     disk_after = folder_bytes(d.folder)
     d.undo()
+    d.discard_redo()
     d.free_orphans()
     for key, values in (("limit", {"gain": 6.0, "ceiling": -1.0, "true_peak": True}),
                         (heavy, {"reduction": 12.0} if heavy == "nr" else {})):
@@ -351,10 +352,11 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
         rep.add("effects", f"{fx.get(key).name.replace('fx_', '')}: peak memory RSS / private",
                 " / ".join(mb(x) for x in mem.peak()), f"fx_{key}_rss", mem.peak()[0])
         d.undo()
+        d.discard_redo()
         d.free_orphans()
     gc_bytes = folder_bytes(d.folder)
     rep.add("disk", "working files after normalize", gb(disk_after), "disk_after_normalize", disk_after)
-    rep.add("disk", "after undo + another effect (the redo branch freed)", gb(gc_bytes), "disk_after_gc", gc_bytes)
+    rep.add("disk", "after the effects undone (their files freed)", gb(gc_bytes), "disk_after_gc", gc_bytes)
 
     # saving
     outdir = os.path.join(sess.path, "out")
