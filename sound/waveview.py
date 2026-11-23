@@ -1,7 +1,12 @@
 """The waveform widgets: WaveView (time ruler on top, dB scale on the left, a lane per channel, the selection, the
 edit cursor and the play cursor), Overview (the whole file in one strip, the visible part framed) and Meters (peak
 level bars with peak hold and clip lights). The waveform is drawn from the document's peak levels into a cached
-pixmap; the cursors and the selection are painted over it, so a moving play cursor costs almost nothing."""
+pixmap; the cursors and the selection are painted over it, so a moving play cursor costs almost nothing.
+
+0.4: under the time ruler a strip of markers (green flags, dragged with the mouse, renamed by a double click) and
+regions (a bar); the selection snaps to them. The view mode «wave / spectrogram / wave + spectrogram»: the
+spectrogram comes in tiles from spectrogram.Engine, drawn into a layer of its own over the wave (the wave shows where
+a tile is not ready yet)."""
 from __future__ import annotations
 
 import math
@@ -9,15 +14,21 @@ import time
 
 import numpy as np
 from PySide6.QtCore import QLineF, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from . import spectrogram as sg
 from . import style
 from .doc import fmt_time
 from .i18n import t
 
-RULER_H = 24
+TIME_H = 24                    # the time ruler
+MARK_H = 16                    # the strip of markers and regions under it
+RULER_H = TIME_H + MARK_H
 GUTTER_W = 46
+SNAP_PX = 6                    # the selection snaps to a marker this close
+MODES = ("wave", "spec", "both")
+WAVE_SHARE = 0.4               # «wave + spectrogram»: the wave's part of a lane
 MIN_SPP = 1 / 32               # at most 32 pixels per sample
 DB_MARKS = (0, -3, -6, -12, -18, -24, -36, -48, -60)
 
@@ -57,6 +68,9 @@ class WaveView(QWidget):
     seekRequested = Signal(int)          # a click while playing: jump the playback there
     contextRequested = Signal(object)    # QPoint (global) — the window builds the menu
     filesDropped = Signal(list)
+    markerMoved = Signal(int, int, object)   # id, new position, new end (a region; None for a marker)
+    markerRename = Signal(int)               # a double click on a marker's flag / a region's bar
+    tilesReady = Signal()                    # (from a worker thread) more spectrogram tiles are in the cache
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,6 +90,20 @@ class WaveView(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumHeight(140)
         self.setAttribute(Qt.WA_OpaquePaintEvent)
+        self.mode = "wave"
+        self.sg_settings = sg.Settings()
+        self.engine: sg.Engine | None = None
+        self._sg_ready = 0                   # how many tiles came in (the layer's key)
+        self._sg_layer: QPixmap | None = None
+        self._sg_key = None
+        self._sg_keep = []                   # the arrays the drawn QImages point into
+        self._sg_timer = QTimer(self)
+        self._sg_timer.setSingleShot(True)
+        self._sg_timer.setInterval(40)
+        self._sg_timer.timeout.connect(self._sg_arrived)
+        self.tilesReady.connect(self._sg_timer.start)
+        self._mdrag = None                   # dragging a marker: {id, part, grab, pos, end, moved}
+        self.hover_marker = None
 
     def sizeHint(self) -> QSize:
         return QSize(900, 420)
@@ -141,9 +169,36 @@ class WaveView(QWidget):
             return []
         return m[2]
 
+    # ── the view mode and the spectrogram ─────────────────────
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode if mode in MODES else "wave"
+        self._cache_key = None
+        self._sg_key = None
+        self.update()
+
+    def set_sg_settings(self, st: sg.Settings) -> None:
+        self.sg_settings = st
+        self._sg_key = None
+        self.update()
+
+    def _engine(self) -> sg.Engine:
+        if self.engine is None:
+            self.engine = sg.Engine(on_ready=self.tilesReady.emit)
+        return self.engine
+
+    def _sg_arrived(self) -> None:
+        self._sg_ready += 1
+        self.update()
+
+    def close_engine(self) -> None:
+        if self.engine is not None:
+            self.engine.stop()
+            self.engine = None
+
     def refresh(self) -> None:
         """The document changed (an edit / undo): redraw everything."""
         self._cache_key = None
+        self._sg_key = None
         if self.doc is not None:
             self.doc.view_start = self.start()
         self.update()
@@ -222,6 +277,10 @@ class WaveView(QWidget):
             self._cache = self._render(lanes)
             self._cache_key = key
         p.drawPixmap(int(lanes.left()), int(lanes.top()), self._cache)
+        if self.mode != "wave":
+            layer = self._sg_paint_layer(lanes, key)
+            if layer is not None:
+                p.drawPixmap(int(lanes.left()), int(lanes.top()), layer)
         self._paint_ruler(p)
         self._paint_gutter(p)
         self._paint_overlay(p)
@@ -245,6 +304,73 @@ class WaveView(QWidget):
         lh = (h - gap * (n - 1)) / max(1, n)
         return [(i * (lh + gap), lh) for i in range(n)]
 
+    def lane_parts(self, top: float, lh: float) -> tuple[tuple | None, tuple | None]:
+        """((top, height) of the wave, (top, height) of the spectrogram) in a lane, by the view mode. In
+        «spectrogram» the wave stays under it (shown where a tile is not ready)."""
+        if self.mode == "spec":
+            return (top, lh), (top, lh)
+        if self.mode == "both":
+            wh = max(12.0, math.floor(lh * WAVE_SHARE))
+            return (top, wh), (top + wh + 1, max(1.0, lh - wh - 1))
+        return (top, lh), None
+
+    # ── the spectrogram layer ─────────────────────────────────
+    def _sg_paint_layer(self, lanes: QRectF, view_key) -> QPixmap | None:
+        d = self.doc
+        st = self.sg_settings
+        geo = self.lane_geom(lanes.height(), d.channels)
+        parts = [self.lane_parts(top, lh)[1] for top, lh in geo]
+        if not parts or parts[0] is None or self.spp() <= 0 or d.frames <= 0:
+            return None
+        rows = max(8, int(parts[0][1]))
+        key = (view_key, self.mode, rows, st.fft, st.scale, st.db_lo, st.db_hi, st.palette(style.IS_DARK),
+               self._sg_ready)
+        if key == self._sg_key and self._sg_layer is not None:
+            return self._sg_layer
+        spp = self.spp()
+        start = self.start()
+        order, jobs = sg.jobs_for_view(d, start, spp, int(lanes.width()), rows, st)
+        eng = self._engine()
+        missing = []
+        got = {}
+        for i in order:
+            arr = eng.cache.get(jobs[i].key)
+            if arr is None:
+                missing.append(jobs[i])
+            else:
+                got[i] = arr
+        eng.want(missing)
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap(int(lanes.width() * dpr), int(lanes.height() * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        table = sg.color_table(st.palette(style.IS_DARK), st.db_lo, st.db_hi)
+        keep = []
+        x_of_col0 = -start / spp
+        for i, arr in got.items():
+            x = x_of_col0 + i * sg.TILE
+            if x > lanes.width() or x + sg.TILE < 0:
+                continue
+            for c, part in enumerate(parts):
+                if part is None or c >= arr.shape[0]:
+                    continue
+                plane = np.ascontiguousarray(arr[c])
+                keep.append(plane)
+                img = QImage(plane.data, sg.TILE, plane.shape[0], sg.TILE, QImage.Format_Indexed8)
+                img.setColorTable(table)
+                p.drawImage(QRectF(x, part[0], sg.TILE, part[1]), img)
+        p.end()
+        self._sg_keep = keep
+        self._sg_layer = pm
+        self._sg_key = key
+        return pm
+
+    def sg_pending(self) -> int:
+        """Tiles still being computed for the view (tests, screenshots)."""
+        return self.engine.pending() if self.engine is not None else 0
+
     def _render(self, lanes: QRectF) -> QPixmap:
         d = self.doc
         dpr = self.devicePixelRatioF()
@@ -261,6 +387,12 @@ class WaveView(QWidget):
         grid = style.qcolor(style.W_GRID)
         center = style.qcolor(style.W_CENTER)
         end_x = min(w, (d.frames - start) / spp)
+        full = geo
+        geo = [self.lane_parts(top, lh)[0] for top, lh in full]
+        if self.mode == "both":
+            for top, lh in full:
+                sp = self.lane_parts(top, lh)[1]
+                p.fillRect(QRectF(0, sp[0], end_x, sp[1]), style.qcolor(style.W_METER))
         for top, lh in geo:
             p.fillRect(QRectF(0, top, end_x, lh), style.qcolor(style.W_LANE))
             mid = top + lh / 2
@@ -331,8 +463,10 @@ class WaveView(QWidget):
         d = self.doc
         r = QRectF(0, 0, self.width(), RULER_H)
         p.fillRect(r, style.qcolor(style.W_RULER))
+        p.fillRect(QRectF(0, TIME_H, self.width(), MARK_H), style.qcolor(style.W_BG))
         p.setPen(QPen(style.qcolor(style.BORDER), 1))
         p.drawLine(QLineF(0, RULER_H - 0.5, self.width(), RULER_H - 0.5))
+        p.drawLine(QLineF(0, TIME_H - 0.5, self.width(), TIME_H - 0.5))
         spp = self.spp()
         start = self.start()
         sec_px = spp / d.rate
@@ -349,9 +483,9 @@ class WaveView(QWidget):
             if x >= GUTTER_W:
                 major = abs(round(sec / step) * step - sec) < sub * 0.01
                 p.setPen(QPen(text, 1))
-                p.drawLine(QLineF(x, RULER_H - (9 if major else 4), x, RULER_H - 1))
+                p.drawLine(QLineF(x, TIME_H - (9 if major else 4), x, TIME_H - 1))
                 if major:
-                    p.drawText(QRectF(x + 3, 2, 120, RULER_H - 9), Qt.AlignLeft | Qt.AlignVCenter,
+                    p.drawText(QRectF(x + 3, 2, 120, TIME_H - 9), Qt.AlignLeft | Qt.AlignVCenter,
                                ruler_label(sec, step))
             k += 1
         p.fillRect(QRectF(0, 0, GUTTER_W, RULER_H), style.qcolor(style.W_RULER))
@@ -364,10 +498,21 @@ class WaveView(QWidget):
         p.fillRect(QRectF(0, RULER_H, GUTTER_W - 1, lanes.height()), style.qcolor(style.W_RULER))
         text = style.qcolor(style.W_RULER_TEXT)
         p.setFont(_font(10))
-        for c, (top, lh) in enumerate(self.lane_geom(lanes.height(), d.channels)):
-            top += RULER_H
+        for c, (top0, lh0) in enumerate(self.lane_geom(lanes.height(), d.channels)):
+            wpart, spart = self.lane_parts(top0, lh0)
+            lane_top = top0 + RULER_H
+            if spart is not None:
+                self._paint_freq_scale(p, spart[0] + RULER_H, spart[1])
+            if self.mode == "spec":
+                top, lh = lane_top, lh0
+                self._paint_lane_name(p, c, top)
+                if c:
+                    p.setPen(QPen(style.qcolor(style.BORDER), 1))
+                    p.drawLine(QLineF(0, top - 0.5, self.width(), top - 0.5))
+                continue
+            top, lh = wpart[0] + RULER_H, wpart[1]
             mid = top + lh / 2
-            marks = [(0, 1.0), ("-∞", 0.0)]
+            marks = [(0, 1.0), ("-∞", 0.0)] if lh >= 40 else []      # a low wave part: no room for labels
             if lh >= 70:
                 marks.append((-6, 0.5))
             if lh >= 160:
@@ -380,17 +525,33 @@ class WaveView(QWidget):
                     label = f"{db}" if isinstance(db, str) else ("0" if db == 0 else str(db))
                     ty = max(top + 1, min(top + lh - 13, y - 6))
                     p.drawText(QRectF(2, ty, GUTTER_W - 9, 12), Qt.AlignRight | Qt.AlignVCenter, label)
-            # the channel's name in a small box at the top-left of its lane
-            name = d.labels[c] if c < len(d.labels) else str(c + 1)
-            p.setFont(_font(10, True))
-            box = QRectF(GUTTER_W + 4, top + 3, 8 + 7 * len(name), 15)
-            p.fillRect(box, style.qcolor(style.W_RULER))
-            p.setPen(QPen(style.qcolor(style.TEXT), 1))
-            p.drawText(box, Qt.AlignCenter, name)
-            p.setFont(_font(10))
+            self._paint_lane_name(p, c, top)
             if c:
                 p.setPen(QPen(style.qcolor(style.BORDER), 1))
-                p.drawLine(QLineF(0, top - 0.5, self.width(), top - 0.5))
+                p.drawLine(QLineF(0, lane_top - 0.5, self.width(), lane_top - 0.5))
+
+    def _paint_lane_name(self, p: QPainter, c: int, top: float) -> None:
+        """The channel's name in a small box at the top-left of its lane."""
+        d = self.doc
+        name = d.labels[c] if c < len(d.labels) else str(c + 1)
+        p.setFont(_font(10, True))
+        box = QRectF(GUTTER_W + 4, top + 3, 8 + 7 * len(name), 15)
+        p.fillRect(box, style.qcolor(style.W_RULER))
+        p.setPen(QPen(style.qcolor(style.TEXT), 1))
+        p.drawText(box, Qt.AlignCenter, name)
+        p.setFont(_font(10))
+
+    def _paint_freq_scale(self, p: QPainter, top: float, h: float) -> None:
+        """Frequencies on the left of a spectrogram part (instead of dB)."""
+        d = self.doc
+        st = self.sg_settings
+        p.setFont(_font(10))
+        p.setPen(QPen(style.qcolor(style.W_RULER_TEXT), 1))
+        for f in sg.freq_ticks(d.rate, st.scale, h):
+            y = top + h - float(sg.y_frac(f, d.rate, st.scale)) * h
+            p.drawLine(QLineF(GUTTER_W - 5, y, GUTTER_W - 1, y))
+            ty = max(top + 1, min(top + h - 13, y - 6))
+            p.drawText(QRectF(2, ty, GUTTER_W - 9, 12), Qt.AlignRight | Qt.AlignVCenter, sg.fmt_freq(f))
 
     def _paint_overlay(self, p: QPainter) -> None:
         d = self.doc
@@ -406,15 +567,16 @@ class WaveView(QWidget):
                                  QPainter.CompositionMode_Multiply)
             p.fillRect(QRectF(x1, RULER_H, x2 - x1, lanes.height()), style.qcolor(style.W_SEL))
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-            p.fillRect(QRectF(x1, RULER_H - 5, x2 - x1, 5), style.qcolor(style.ACCENT))
+            p.fillRect(QRectF(x1, TIME_H - 5, x2 - x1, 5), style.qcolor(style.ACCENT))
         xc = self.x_of(d.cursor)
         pen = QPen(style.qcolor(style.W_CURSOR), 1, Qt.DashLine)
         p.setPen(pen)
-        p.drawLine(QLineF(xc + 0.5, RULER_H, xc + 0.5, self.height()))
+        p.drawLine(QLineF(xc + 0.5, TIME_H, xc + 0.5, self.height()))
         p.setPen(Qt.NoPen)
         p.setBrush(style.qcolor(style.W_CURSOR))
-        p.drawPolygon(QPolygonF([QPointF(xc - 5, RULER_H - 7), QPointF(xc + 5, RULER_H - 7),
-                                 QPointF(xc + 0.5, RULER_H - 1)]))
+        p.drawPolygon(QPolygonF([QPointF(xc - 5, TIME_H - 7), QPointF(xc + 5, TIME_H - 7),
+                                 QPointF(xc + 0.5, TIME_H - 1)]))
+        self._paint_markers(p)
         marks = self.marks()
         if marks:
             a, b = self.visible()
@@ -434,6 +596,100 @@ class WaveView(QWidget):
             p.drawLine(QLineF(xp, 0, xp, self.height()))
         p.restore()
 
+    # ── markers and regions ───────────────────────────────────
+    def shown_markers(self) -> list:
+        """The document's markers as drawn now (the one being dragged at its new place)."""
+        d = self.doc
+        if d is None:
+            return []
+        md = self._mdrag
+        if not md or not md["moved"]:
+            return list(d.markers)
+        from .doc import Marker
+        return [Marker(m.id, m.name, md["pos"], md["end"]) if m.id == md["id"] else m for m in d.markers]
+
+    def _flag_rect(self, m, fm: QFontMetrics) -> QRectF:
+        x = self.x_of(m.pos)
+        w = min(160, fm.horizontalAdvance(m.name or "·") + 8)
+        return QRectF(x, TIME_H + 1, w, MARK_H - 2)
+
+    def _paint_markers(self, p: QPainter) -> None:
+        ms = self.shown_markers()
+        if not ms:
+            return
+        a, b = self.visible()
+        green = style.qcolor(style.W_MARKER)
+        f = _font(10, True)
+        fm = QFontMetrics(f)
+        p.setFont(f)
+        bottom = self.height()
+        # regions: a bar in the strip, dashed edges through the lanes
+        for m in ms:
+            if m.end is None or m.end < a or m.pos > b:
+                continue
+            x1, x2 = self.x_of(m.pos), self.x_of(m.end)
+            fill = QColor(green)
+            fill.setAlpha(70 if style.IS_DARK else 55)
+            bar = QRectF(x1, TIME_H + 1, max(2.0, x2 - x1), MARK_H - 2)
+            p.fillRect(bar, fill)
+            pen = QPen(green, 1, Qt.DashLine)
+            p.setPen(pen)
+            for x in (x1, x2):
+                p.drawLine(QLineF(x + 0.5, TIME_H, x + 0.5, bottom))
+            p.setPen(QPen(style.qcolor(style.TEXT), 1))
+            p.drawText(bar.adjusted(4, 0, -2, 0), Qt.AlignLeft | Qt.AlignVCenter,
+                       fm.elidedText(m.name, Qt.ElideRight, max(0, int(bar.width()) - 6)))
+        # markers: a line and a flag with the name
+        for m in ms:
+            if m.end is not None or not (a <= m.pos <= b):
+                continue
+            x = self.x_of(m.pos)
+            p.setPen(QPen(green, 1))
+            p.drawLine(QLineF(x + 0.5, TIME_H, x + 0.5, bottom))
+            r = self._flag_rect(m, fm)
+            p.fillRect(r, green)
+            p.setPen(QPen(QColor("#0b1f12") if style.IS_DARK else QColor("#ffffff"), 1))
+            p.drawText(r.adjusted(4, 0, -2, 0), Qt.AlignLeft | Qt.AlignVCenter,
+                       fm.elidedText(m.name, Qt.ElideRight, int(r.width()) - 6))
+
+    def marker_at(self, x: float, y: float):
+        """(marker, part) under the mouse in the strip: part "pos" (a marker), "start" / "end" (a region's edge)
+        or "move" (inside a region's bar); (None, "") elsewhere."""
+        if self.doc is None or not (TIME_H <= y < RULER_H):
+            return None, ""
+        fm = QFontMetrics(_font(10, True))
+        ms = self.doc.markers
+        for m in reversed(ms):                      # markers (drawn on top) first
+            if m.end is None and (self._flag_rect(m, fm).contains(QPointF(x, y)) or
+                                  abs(x - self.x_of(m.pos)) <= 4):
+                return m, "pos"
+        for m in ms:
+            if m.end is None:
+                continue
+            x1, x2 = self.x_of(m.pos), self.x_of(m.end)
+            if abs(x - x1) <= 4:
+                return m, "start"
+            if abs(x - x2) <= 4:
+                return m, "end"
+        for m in ms:
+            if m.end is not None and self.x_of(m.pos) < x < self.x_of(m.end):
+                return m, "move"
+        return None, ""
+
+    def snap(self, f: int, exclude: int | None = None) -> int:
+        """f moved onto a marker / region edge within SNAP_PX pixels."""
+        d = self.doc
+        if d is None or not d.markers:
+            return f
+        best, dist = f, SNAP_PX * self.spp()
+        for m in d.markers:
+            if m.id == exclude:
+                continue
+            for q in (m.pos, m.end):
+                if q is not None and abs(q - f) <= dist:
+                    best, dist = q, abs(q - f)
+        return best
+
     # ── mouse and keys ────────────────────────────────────────
     def mousePressEvent(self, ev) -> None:
         d = self.doc
@@ -446,6 +702,12 @@ class WaveView(QWidget):
         if ev.button() != Qt.LeftButton or x < GUTTER_W:
             return
         f = self.frame_at(x)
+        m, part = self.marker_at(x, y)
+        if m is not None:
+            grab = f - (m.end if part == "end" else m.pos)        # where on the marker it was taken
+            self._mdrag = {"id": m.id, "part": part, "grab": grab, "pos": m.pos, "end": m.end, "moved": False,
+                           "x": x}
+            return
         if y < RULER_H:
             d.cursor = f
             self.seekRequested.emit(f)
@@ -476,12 +738,26 @@ class WaveView(QWidget):
         d.cursor = f if d.sel else anchor
 
     def mouseMoveEvent(self, ev) -> None:
-        if self._drag is None or self.doc is None:
+        if self.doc is None:
+            return
+        if self._mdrag is not None:
+            self._drag_marker(ev.position().x())
+            return
+        if self._drag is None:
+            m, part = self.marker_at(ev.position().x(), ev.position().y())
+            shape = {"pos": Qt.SizeHorCursor, "start": Qt.SizeHorCursor, "end": Qt.SizeHorCursor,
+                     "move": Qt.OpenHandCursor}.get(part)
+            if shape is None:
+                self.unsetCursor()
+            else:
+                self.setCursor(shape)
+            self.setToolTip("" if m is None else f"{m.name} · {fmt_time(m.pos, self.doc.rate)}" +
+                            (f" … {fmt_time(m.end, self.doc.rate)}" if m.end is not None else ""))
             return
         x = ev.position().x()
         self._drag_x = x
         if abs(x - self.x_of(self._drag)) >= 2 or self.doc.sel:
-            self._set_sel(self._drag, self.frame_at(max(GUTTER_W, min(self.width(), x))))
+            self._set_sel(self._drag, self.snap(self.frame_at(max(GUTTER_W, min(self.width(), x)))))
             self.selectionChanged.emit()
             self.update()
         if x < GUTTER_W or x > self.width():
@@ -502,12 +778,51 @@ class WaveView(QWidget):
         self._set_sel(self._drag, self.frame_at(edge))
         self.selectionChanged.emit()
 
+    def _drag_marker(self, x: float) -> None:
+        md = self._mdrag
+        d = self.doc
+        if not md["moved"] and abs(x - md["x"]) < 3:
+            return
+        md["moved"] = True
+        f = self.frame_at(max(GUTTER_W, min(self.width(), x)))
+        m = d.marker(md["id"])
+        if m is None:
+            self._mdrag = None
+            return
+        g = max(0, min(d.frames, f - md["grab"]))
+        if md["part"] == "pos":
+            md["pos"] = self.snap(g, m.id)
+        elif md["part"] == "start":
+            md["pos"] = min(self.snap(g, m.id), m.end - 1)
+        elif md["part"] == "end":
+            md["end"] = max(self.snap(g, m.id), m.pos + 1)
+        else:
+            p = max(0, min(d.frames - m.length, f - md["grab"]))
+            p2 = self.snap(p, m.id)
+            if p2 == p:                                   # the end may snap instead
+                e2 = self.snap(p + m.length, m.id)
+                p2 = max(0, min(d.frames - m.length, e2 - m.length))
+            md["pos"], md["end"] = p2, p2 + m.length
+        self.update()
+
     def mouseReleaseEvent(self, ev) -> None:
+        md, self._mdrag = self._mdrag, None
+        if md is not None:
+            if md["moved"]:
+                self.markerMoved.emit(md["id"], int(md["pos"]), md["end"])
+            self.update()
+            return
         self._drag = None
         self._auto.stop()
 
     def mouseDoubleClickEvent(self, ev) -> None:
         d = self.doc
+        if d is not None and ev.button() == Qt.LeftButton:
+            m, _part = self.marker_at(ev.position().x(), ev.position().y())
+            if m is not None:
+                self._mdrag = None
+                self.markerRename.emit(m.id)
+                return
         if d is not None and ev.button() == Qt.LeftButton and ev.position().y() >= RULER_H and d.frames:
             d.sel = (0, d.frames)
             self.selectionChanged.emit()
@@ -582,6 +897,17 @@ class Overview(QWidget):
             p.fillRect(QRectF(GUTTER_W + d.sel[0] * k, 0, max(1.0, (d.sel[1] - d.sel[0]) * k), self.height()),
                        style.qcolor(style.W_SEL))
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        green = style.qcolor(style.W_MARKER)
+        for m in d.markers:
+            if m.end is not None:
+                fill = QColor(green)
+                fill.setAlpha(60)
+                p.fillRect(QRectF(GUTTER_W + m.pos * k, self.height() - 6, max(1.0, m.length * k), 5), fill)
+        p.setPen(QPen(green, 1))
+        for m in d.markers:
+            if m.end is None:
+                xm = GUTTER_W + m.pos * k
+                p.drawLine(QLineF(xm, 0, xm, self.height()))
         a, b = self.view.visible()
         vr = QRectF(GUTTER_W + a * k, 0.5, max(3.0, (min(b, d.frames) - a) * k), self.height() - 1)
         p.fillRect(vr, style.qcolor(style.W_OVER_VIEW))

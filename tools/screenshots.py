@@ -1,7 +1,9 @@
 """Screenshots of the window (offscreen Qt) in the dark and the light theme: the empty window, a stereo file with a
 selection while it plays (the status bar measured), the sample-level zoom, a 5.1 file, Tools → Statistics of the
 5.1 file, the Normalize dialog, and (0.3) the effect windows while they preview: the parametric EQ, the compressor,
-the noise reduction with its noise sample, the reverb. Test sound is made by ffmpeg.
+the noise reduction with its noise sample, the reverb; (0.4) markers and regions with their list, the spectrum
+panel while playing, the spectrogram and «wave + spectrogram» views, Tools → Spectrum, the spectrogram settings and
+the Record window recording from the null input. Test sound is made by ffmpeg.
 
 Usage: python tools/screenshots.py OUT_DIR [ru|en]"""
 import os
@@ -65,6 +67,14 @@ def main(out: str, lang: str = "ru") -> int:
         w.tabs.setCurrentIndex(0)
         pump(0.2)
         d = w.doc
+        mk = ("Вступление", "Куплет", "Припев") if lang == "ru" else ("Intro", "Verse", "Chorus")
+        d.add_marker(int(4.0 * 44100), mk[0])
+        d.add_marker(int(16.0 * 44100), mk[1])
+        d.add_region(int(36.0 * 44100), int(52.0 * 44100), mk[2])
+        d.add_region(int(60.0 * 44100), int(71.5 * 44100), mk[2] + " 2")
+        d.add_marker(int(80.0 * 44100), "Outro")
+        d.mark_saved()
+        w._markers_changed()
         d.sel = (int(20.5 * 44100), int(31.2 * 44100))
         d.cursor = d.sel[0]
         w.wave.refresh()
@@ -107,6 +117,7 @@ def main(out: str, lang: str = "ru") -> int:
         nd.grab().save(os.path.join(out, f"normalize_{theme}.png"))
         nd.close()
         shoot_effects(w, out, theme, pump)
+        shoot_04(w, out, theme, pump, lang)
         for x in w.docs:
             x.mark_saved()
         w.close()
@@ -145,6 +156,76 @@ def shoot_effects(w, out: str, theme: str, pump) -> None:
         dlg.grab().save(os.path.join(out, f"fx_{key}_{theme}.png"))
         dlg.reject()
         pump(0.1)
+
+
+def _tiles(w, pump) -> None:
+    w.wave.repaint()
+    t0 = time.time()
+    while time.time() - t0 < 30:
+        pump(0.1)
+        if w.wave.engine is not None and w.wave.sg_pending() == 0 and w.wave._sg_ready:
+            break
+    pump(0.2)
+
+
+def shoot_04(w, out: str, theme: str, pump, lang: str) -> None:
+    """Markers, the spectrogram views, the spectrum window, the spectrogram settings, the Record window."""
+    from sound.anaui import SpectrogramDialog
+    w.tabs.setCurrentIndex(0)
+    pump(0.2)
+    d = w.doc
+    d.sel = (int(36.0 * 44100), int(52.0 * 44100))
+    w.wave.zoom_all()
+    w._on_selection()
+    w.set_view_mode("spec")
+    _tiles(w, pump)
+    w.play()
+    pump(0.8)
+    w.grab().save(os.path.join(out, f"spectrogram_{theme}.png"))
+    w.stop_play()
+    w.tabs.setCurrentIndex(1)
+    pump(0.2)
+    w.set_view_mode("both")
+    w.doc.sel = (int(3 * 48000), int(7.5 * 48000))
+    w._on_selection()
+    _tiles(w, pump)
+    pump(0.6)
+    w.grab().save(os.path.join(out, f"wave_spectrogram_{theme}.png"))
+    w.set_view_mode("wave")
+    w.tabs.setCurrentIndex(0)
+    pump(0.2)
+    d = w.doc
+    d.sel = (int(20.5 * 44100), int(31.2 * 44100))
+    w._on_selection()
+    w.spectrum_dialog()
+    dlg = w.spectrum_dlg
+    t0 = time.time()
+    while dlg.result is None and time.time() - t0 < 20:
+        pump(0.1)
+    dlg.resize(1000, 600)
+    dlg.plot.hover_x = dlg.plot.x_of(554.0)
+    pump(0.2)
+    dlg.grab().save(os.path.join(out, f"spectrum_{theme}.png"))
+    dlg.close()
+    w.set_view_mode("spec")
+    sd = SpectrogramDialog(w)
+    sd.show()
+    pump(0.3)
+    sd.grab().save(os.path.join(out, f"spectrogram_settings_{theme}.png"))
+    sd.reject()
+    w.set_view_mode("wave")
+    w.record_toggle()
+    rd = w.rec_dlg
+    rd.marker()
+    w.record_toggle()
+    pump(1.6)
+    rd.marker()
+    pump(0.6)
+    rd.grab().save(os.path.join(out, f"record_{theme}.png"))
+    rd.stop()
+    rd.reject()
+    pump(0.2)
+    w.grab().save(os.path.join(out, f"recorded_{theme}.png"))
 
 
 if __name__ == "__main__":

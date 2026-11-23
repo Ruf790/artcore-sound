@@ -15,6 +15,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "ffmpeg")
 API = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
+RECENT = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=6"
 
 
 def _get(url: str, accept: str = "application/vnd.github+json"):
@@ -39,11 +40,21 @@ def pick(assets: list[dict], master: bool) -> dict | None:
 
 
 def main() -> int:
+    master = "--master" in sys.argv
     with _get(API) as r:
         rel = json.load(r)
-    a = pick(rel.get("assets", []), "--master" in sys.argv)
+    a = pick(rel.get("assets", []), master)
     if a is None:
-        print("no win64-gpl-shared asset in", rel.get("tag_name"), [x["name"] for x in rel.get("assets", [])])
+        # the newest autobuild may still be uploading (its Windows files come last): take the one before
+        print("no win64-gpl-shared asset yet in", rel.get("tag_name"), "- looking at the previous builds")
+        with _get(RECENT) as r:
+            for older in json.load(r):
+                a = pick(older.get("assets", []), master)
+                if a is not None:
+                    rel = older
+                    break
+    if a is None:
+        print("no win64-gpl-shared asset in the recent BtbN builds")
         return 1
     print("FFmpeg:", rel.get("tag_name"), a["name"], f"{a['size'] / 1e6:.1f} MB")
     tmp = tempfile.mkdtemp()

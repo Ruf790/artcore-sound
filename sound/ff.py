@@ -141,6 +141,7 @@ class Track:
     lang: str = ""
     title: str = ""
     default: bool = False
+    tags: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -153,6 +154,7 @@ class FileInfo:
     tracks: list = field(default_factory=list)
     has_video: bool = False
     tags: dict = field(default_factory=dict)
+    chapters: list = field(default_factory=list)     # (start s, end s, title)
 
 
 def _bits(s: dict) -> int:
@@ -173,7 +175,8 @@ def probe(path: str) -> FileInfo:
     exe = ffprobe()
     if not exe:
         raise FileNotFoundError("ffprobe")
-    r = run([exe, "-v", "error", "-hide_banner", "-print_format", "json", "-show_format", "-show_streams", path], 60)
+    r = run([exe, "-v", "error", "-hide_banner", "-print_format", "json", "-show_format", "-show_streams",
+             "-show_chapters", path], 60)
     if r.returncode != 0:
         raise ValueError((r.stderr or "ffprobe failed").strip().splitlines()[-1] if r.stderr.strip() else "ffprobe failed")
     js = json.loads(r.stdout or "{}")
@@ -188,6 +191,13 @@ def probe(path: str) -> FileInfo:
     except (ValueError, OSError):
         pass
     info.tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
+    for ch in js.get("chapters") or []:
+        try:
+            s0 = float(ch.get("start_time") or 0)
+            s1 = float(ch.get("end_time")) if ch.get("end_time") is not None else None
+        except (TypeError, ValueError):
+            continue
+        info.chapters.append((s0, s1, ((ch.get("tags") or {}).get("title") or "").strip()))
     pos = 0
     for s in js.get("streams", []):
         kind = s.get("codec_type")
@@ -200,7 +210,8 @@ def probe(path: str) -> FileInfo:
                   codec_long=s.get("codec_long_name", ""), profile=s.get("profile", "") or "",
                   rate=int(s.get("sample_rate") or 0), channels=int(s.get("channels") or 0),
                   layout=s.get("channel_layout", "") or "", bits=_bits(s), lang=tags.get("language", ""),
-                  title=tags.get("title", ""), default=bool((s.get("disposition") or {}).get("default")))
+                  title=tags.get("title", ""), default=bool((s.get("disposition") or {}).get("default")),
+                  tags=tags)
         try:
             t.bitrate = int(s.get("bit_rate") or 0)
         except ValueError:

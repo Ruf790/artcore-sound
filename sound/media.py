@@ -104,10 +104,26 @@ def open_file(path: str, folder: str, track_pos: int = 0, progress: Progress | N
     lay = ff.layout_for(track.channels, track.layout)
     d = Document(rate=track.rate, channels=track.channels, folder=folder, labels=tuple(ff.labels(track.channels, lay)),
                  layout=lay, name=os.path.basename(path), path=path, info=info, track=track)
+    d.markers = read_markers(path, info, track, src.frames)
     d.set_initial(src)
     fmt, opts = format_of(path, track, info)
     d.save_format, d.save_opts = fmt, opts
     return d
+
+
+def read_markers(path: str, info: ff.FileInfo, track: ff.Track, frames: int) -> tuple:
+    """The markers / regions of the file (0.4): a WAV's cue points, else what ffprobe sees (our tag, chapters —
+    a film's chapters become regions)."""
+    from . import marks
+    items: list = []
+    try:
+        if "wav" in (info.format or "") and track.codec.startswith("pcm_"):
+            items = marks.read_wav(path)
+        if not items:
+            items = marks.from_probe(info, track, track.rate)
+    except Exception:                            # noqa: BLE001 — a broken chunk must not stop the opening
+        items = []
+    return marks.to_markers(items, frames)
 
 
 def needed_bytes(track: ff.Track) -> int:
@@ -228,9 +244,11 @@ TAG_KEYS = ("title", "artist", "album", "album_artist", "date", "genre", "track"
 
 
 def save(d: Document, path: str, fmt: str, option: str, progress: Progress | None = None,
-         a: int = 0, b: int | None = None, tags: dict | None = None) -> None:
-    """Write frames [a, b) of the document (all by default) to path. Goes through a temporary file next to the
-    target, so the old file stays whole if anything fails."""
+         a: int = 0, b: int | None = None, tags: dict | None = None, markers: bool = True) -> None:
+    """Write frames [a, b) of the document (all by default) to path, with its markers and regions in that range
+    (marks.py). Goes through a temporary file next to the target, so the old file stays whole if anything
+    fails."""
+    from . import marks
     progress = progress or Progress()
     exe = ff.ffmpeg()
     if not exe:
@@ -248,10 +266,12 @@ def save(d: Document, path: str, fmt: str, option: str, progress: Progress | Non
     if fmt in ("wav", "flac"):
         meta += ["-metadata", "encoded_by=ArtCore Sound"]
     muxer = {"wav": "wav", "flac": "flac", "mp3": "mp3", "aac": "ipod", "opus": "opus", "ac3": "ac3"}[fmt]
+    items = marks.items_for_save(d, a, b, out_rate) if markers else []
+    meta_file = tmp + ".ffmeta"
+    m_in, m_out = marks.save_args(fmt, items, out_rate, meta_file, os.path.basename(path))
     args = [exe, "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "f32le", "-ar", str(d.rate),
-            *ch_layout_args(d.channels, d.layout), "-i", "pipe:0", *encode_args(fmt, option, d.channels, d.rate,
-                                                                                  out_ch, out_rate),
-            *meta, "-f", muxer, tmp]
+            *ch_layout_args(d.channels, d.layout), "-i", "pipe:0", *m_in,
+            *encode_args(fmt, option, d.channels, d.rate, out_ch, out_rate), *meta, *m_out, "-f", muxer, tmp]
     proc = ff.popen(args, stdin=subprocess.PIPE)
     err = _stderr_reader(proc)
     total = max(1, b - a)
@@ -268,10 +288,18 @@ def save(d: Document, path: str, fmt: str, option: str, progress: Progress | Non
         proc.kill()
         proc.wait()
         _rm(tmp)
+        _rm(meta_file)
         raise
+    _rm(meta_file)
     if proc.returncode != 0 or not os.path.isfile(tmp):
         _rm(tmp)
         raise RuntimeError("\n".join(err[-6:]) or f"ffmpeg exit {proc.returncode}")
+    if fmt == "wav" and items:
+        try:
+            marks.write_wav(tmp, items)
+        except (OSError, ValueError):
+            _rm(tmp)
+            raise
     os.replace(tmp, path)
     progress(1.0)
 

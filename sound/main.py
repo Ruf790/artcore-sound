@@ -46,7 +46,10 @@ def selftest() -> int:
     DC offset and trims the silence, builds the window and plays a second into the null output. 0.3: the filters the
     effects need (rubberband, atempo, asetrate, aresample), every effect on the 5.1 file checked by the numbers (EQ
     gain, the limiter's true-peak ceiling, the compressor, the delay's tail, the reverb, noise reduction, a click found
-    and filled, tempo by its length, pitch by FFT) and a live preview through the null output."""
+    and filled, tempo by its length, pitch by FFT) and a live preview through the null output. 0.4: the spectrum of
+    the 440 Hz tone, a spectrogram tile, markers and regions written into a WAV (cue / labl) and read back and kept
+    by an edit, a recording through the null input, and a WASAPI input stream opened (or a clear word that there is
+    no input device)."""
     import tempfile
     import time
     import traceback
@@ -146,6 +149,7 @@ def selftest() -> int:
         if abs(lufs + 23.0) > 0.1 or d.frames > 3 * 48000 - 23000:
             raise RuntimeError("normalize / trim silence")
         _selftest_effects(d, lines)
+        _selftest_04(src, session, tmp, lines)
         cfg = config.load()
         cfg.update(check_updates=False)
         os.environ["ARTCORE_AUDIO"] = "null"
@@ -267,6 +271,56 @@ def _selftest_effects(d, lines: list) -> None:
     lines.append(f"  tempo +25 %: {n} → {src.frames} frames; pitch +12: 440 → {f:.1f} Hz ({tm.engine({})})")
     if abs(src.frames - n / 1.25) > 0.01 * n or abs(f - 880) > 4:
         raise RuntimeError("tempo / pitch")
+
+
+def _selftest_04(path: str, session, tmp: str, lines: list) -> None:
+    """Spectrum, spectrogram, markers in a WAV, recording (0.4)."""
+    import time
+
+    import numpy as np
+    from . import marks, media, record, spectrogram, spectrum
+    d = media.open_file(path, session.folder())
+    st = spectrum.Settings(fft=8192, window="flattop")
+    res = spectrum.spectrum(d, 0, d.frames, st)
+    f, v = spectrum.peak(res.freqs, res.levels()[0], win="flattop")
+    ref = 20 * np.log10(float(np.abs(d.read(d.rate, d.rate)[:, 0]).max()))
+    lines.append(f"spectrum: peak {f:.1f} Hz {v:.2f} dB (sample peak {ref:.2f} dBFS), {spectrum.note(f)}, "
+                 f"{res.segments} segments")
+    if abs(f - 440) > 1 or abs(v - ref) > 0.3:
+        raise RuntimeError("spectrum")
+    sst = spectrogram.Settings(fft=2048, scale="lin")
+    order, jobs = spectrogram.jobs_for_view(d, 0, d.frames / 1000, 1000, 400, sst)
+    j = jobs[order[0]]
+    t0 = time.monotonic()
+    arr = spectrogram.compute_tile(j.reader, j.frames, j.rate, j.spp, j.tile, j.rows, j.fft, j.scale, j.chs)
+    row = int(np.argmax(arr[0][:, 100]))
+    fr = float(spectrogram.f_of_frac(1 - (row + 0.5) / 400, d.rate, "lin"))
+    lines.append(f"spectrogram tile {arr.shape} in {(time.monotonic() - t0) * 1000:.0f} ms: the line at {fr:.0f} Hz")
+    if abs(fr - 440) > 40:
+        raise RuntimeError("spectrogram")
+    d.add_marker(48000, "Метка 1")
+    d.add_region(72000, 120000, "Регион «1»")
+    wav = os.path.join(tmp, "markers.wav")
+    media.save(d, wav, "wav", "24")
+    back = marks.read_wav(wav)
+    d.delete(0, 24000)
+    lines.append(f"markers in WAV: {back}; after deleting 0.5 s: {[(m.pos, m.end) for m in d.markers]}")
+    if back != [("Метка 1", 48000, None), ("Регион «1»", 72000, 120000)] or \
+            [(m.pos, m.end) for m in d.markers] != [(24000, None), (48000, 96000)]:
+        raise RuntimeError("markers")
+    lines.append("input: " + record.probe_input())
+    r = record.Recorder()
+    if not r.open({"null": True, "name": "null", "channels": 2, "rate": 48000}, 2, 48000):
+        raise RuntimeError("the null input: " + r.error)
+    r.record(session.folder())
+    time.sleep(0.6)
+    src = r.stop()
+    r.close()
+    x = src.read(0, src.frames) if src is not None else np.zeros((0, 2))
+    lines.append(f"recorded (null input): {len(x) / 48000:.2f} s, peak {float(np.abs(x).max(initial=0)):.3f}, "
+                 f"{r.overflows} dropped")
+    if not 0.4 < len(x) / 48000 < 0.9 or abs(float(np.abs(x).max(initial=0)) - 0.25) > 0.01 or r.overflows:
+        raise RuntimeError("recording")
 
 
 def _tp_of(src, rate: int, labels) -> float:

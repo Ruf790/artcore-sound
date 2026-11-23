@@ -436,6 +436,18 @@ QTableWidget#stats {{ background: {PANEL}; color: {TEXT}; border: 1px solid {BOR
                       alternate-background-color: {ALT}; selection-background-color: {SEL};
                       selection-color: {SEL_TEXT}; font-family: "Consolas", "DejaVu Sans Mono", monospace; }}
 QTableWidget#stats QTableCornerButton::section {{ background: {PANEL}; border: none; }}
+QToolButton#ctl:checked {{ background: {PRESSED}; }}
+QWidget#spectrumPanel {{ background: {PANEL}; border-top: 1px solid {BORDER}; }}
+QTreeWidget#markers {{ background: {PANEL}; color: {TEXT}; border: 1px solid {BORDER};
+                       alternate-background-color: {ALT}; selection-background-color: {SEL};
+                       selection-color: {SEL_TEXT}; font-size: 9pt; }}
+QLabel#recTime {{ font-family: "Consolas", "DejaVu Sans Mono", monospace; font-size: 22pt; font-weight: 600;
+                  color: {ACCENT}; }}
+QLabel#recOn {{ color: #e5484d; font-weight: 700; }}
+QPushButton#record {{ color: #ffffff; background: #d6363c; border: 1px solid #b0262c; font-weight: 700;
+                      padding: 6px 16px; }}
+QPushButton#record:hover {{ background: #e5484d; }}
+QPushButton#record:disabled {{ background: {PANEL2}; color: {MUTED}; border-color: {BORDER}; }}
 """
 
 

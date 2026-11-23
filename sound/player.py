@@ -6,7 +6,11 @@ same pace, so the play cursor and the meters behave the same.
 
 The preview of an effect (0.3) plays through an fx chain run in the reader thread, never in the callback: what the
 reader prepares goes through it before the queue, and the meters show the processed sound. With an effect the reader
-keeps less ready (AHEAD_FX), so a slider is heard within a tenth of a second."""
+keeps less ready (AHEAD_FX), so a slider is heard within a tenth of a second.
+
+The reader also keeps the last frames it prepared (after the effect, before the downmix) in a ring with a running
+frame count; the callback notes how far the sound card has got, so tap(n) gives the n frames being heard now — the
+live spectrum (0.4)."""
 from __future__ import annotations
 
 import collections
@@ -20,6 +24,7 @@ BLOCK = 2048                   # frames per chunk the reader prepares
 AHEAD = 0.5                    # seconds kept ready
 AHEAD_FX = 0.12                # … while an effect is previewed (its changes are heard sooner)
 BLOCK_FX = 1024
+TAP = 1 << 17                  # frames kept for tap() (more than the largest FFT + what the reader keeps ready)
 
 
 def _sd():
@@ -133,6 +138,9 @@ class Player:
         self._paused_at = 0
         self.fx = None                       # an fx.PreviewChain (or anything with process(x) → y) while previewing
         self.finished = threading.Event()
+        self._tap = None                     # (TAP, channels) ring of the frames prepared
+        self._tap_w = 0                      # frames written into it so far
+        self._heard = 0                      # … of which the sound card has started playing this many
 
     # ── control ───────────────────────────────────────────────
     def play(self, doc, start: int, end: int | None = None, loop: bool = False, fx=None) -> bool:
@@ -155,6 +163,8 @@ class Player:
         self._eof = False
         self._clock = (at, time.monotonic(), time.monotonic)
         self._levels = np.zeros(self.doc.channels, np.float32)
+        self._tap = np.zeros((TAP, self.doc.channels), np.float32)
+        self._tap_w = self._heard = 0
         if not self._open():
             return False
         self._run = True
@@ -218,6 +228,20 @@ class Player:
     def levels(self) -> np.ndarray | None:
         """The peak of each document channel in the sound being heard (None when stopped)."""
         return None if self.state != "play" else self._levels
+
+    def tap(self, n: int) -> np.ndarray | None:
+        """The last n frames heard (the document's channels, after the effect being previewed); None when
+        stopped or not that many yet."""
+        ring = self._tap
+        if self.state != "play" or ring is None:
+            return None
+        n = min(int(n), TAP // 2)
+        with self._lock:
+            end = self._heard
+            if end < n or self._tap_w - end > TAP - n:
+                return None
+            idx = np.arange(end - n, end) % TAP
+            return ring[idx].copy()
 
     @property
     def done(self) -> bool:
@@ -284,11 +308,20 @@ class Player:
             if self.fx is not None:
                 x = self.fx.process(x)
             peaks = np.abs(x).max(axis=0) if n else np.zeros(doc.channels, np.float32)
+            ring = self._tap
+            w0 = self._tap_w
+            if ring is not None and n:
+                i = w0 % TAP
+                k = min(n, TAP - i)
+                ring[i:i + k] = x[:k]
+                if k < n:
+                    ring[:n - k] = x[k:n]
             if self._mix is not None:
                 x = x @ self._mix
             with self._lock:
-                self._q.append([p, np.ascontiguousarray(x, np.float32), 0, peaks])
+                self._q.append([p, np.ascontiguousarray(x, np.float32), 0, peaks, w0])
                 self._qframes += n
+                self._tap_w = w0 + n
             self._next = p + n
 
     def _callback(self, outdata, frames, tinfo, status) -> None:
@@ -300,10 +333,11 @@ class Player:
                     if not self._q:
                         break
                     self._cur = self._q.popleft()
-                pos, data, used, peaks = self._cur
+                pos, data, used, peaks, tw = self._cur
                 if first_pos is None:
                     first_pos = pos + used
                     self._levels = peaks
+                    self._heard = tw + used
                 k = min(frames - filled, len(data) - used)
                 outdata[filled:filled + k] = data[used:used + k]
                 filled += k

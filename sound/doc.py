@@ -18,6 +18,82 @@ from .store import BASE, FACTOR, Source
 Piece = tuple            # (Source, offset in the source, frames)
 RAW_SPP = BASE * FACTOR  # frames per column below which the view reads the frames themselves
 
+_marker_ids = itertools.count(1)
+
+
+@dataclass(frozen=True)
+class Marker:
+    """A marker (end None) or a region [pos, end) of the document, in frames. id is unique for the run (the list
+    and the view follow a marker by it through edits and undo)."""
+    id: int
+    name: str
+    pos: int
+    end: int | None = None
+
+    @property
+    def is_region(self) -> bool:
+        return self.end is not None
+
+    @property
+    def length(self) -> int:
+        return self.end - self.pos if self.end is not None else 0
+
+
+def new_marker(name: str, pos: int, end: int | None = None) -> Marker:
+    pos = max(0, int(pos))
+    if end is not None:
+        a, b = sorted((pos, max(0, int(end))))
+        return Marker(next(_marker_ids), str(name), a, b)
+    return Marker(next(_marker_ids), str(name), pos, None)
+
+
+def sort_markers(ms) -> tuple:
+    """By time: the position, then markers before regions, the shorter region first."""
+    return tuple(sorted(ms, key=lambda m: (m.pos, m.end is not None, m.end or 0, m.id)))
+
+
+def remap_markers(ms, a: int, b: int, n: int, mode: str = "cut") -> tuple:
+    """The frames [a, b) became n frames. mode "cut": their sound is gone (delete, paste over, trim) — a marker
+    inside is removed (one exactly at a or b stays at the seam), a region keeps the part of its sound that is left
+    (removed when nothing is). mode "scale": the same sound stretched (tempo, a rate change) — positions inside are
+    scaled. An insertion (a == b): a marker or a region end at a stays before the inserted frames, a region that
+    starts at a moves with its sound."""
+    a, b, n = int(a), int(b), max(0, int(n))
+    d = n - (b - a)
+    if not ms or (d == 0 and mode == "scale"):
+        return tuple(ms)
+
+    def mp(p: int, start: bool) -> int | None:
+        if p < a or (p == a and not (a == b and start)):
+            return p
+        if p >= b:
+            return p + d
+        if mode == "scale":
+            return a + int(round((p - a) * n / (b - a)))
+        return None                                      # inside the sound that is gone
+
+    out = []
+    for m in ms:
+        if m.end is None:
+            p = mp(m.pos, False)
+            if p is not None:
+                out.append(Marker(m.id, m.name, p, None))
+            continue
+        s, e = mp(m.pos, True), mp(m.end, False)
+        if s is None:
+            s = a + n                                      # the region's sound that is left starts after the seam
+        if e is None:
+            e = a
+        if e > s:
+            out.append(Marker(m.id, m.name, s, e))
+    return sort_markers(out)
+
+
+def scale_markers(ms, factor: float) -> tuple:
+    """Every position × factor (the whole document at another rate / tempo)."""
+    return sort_markers(Marker(m.id, m.name, int(round(m.pos * factor)),
+                               None if m.end is None else int(round(m.end * factor))) for m in ms)
+
 
 @dataclass
 class State:
@@ -32,6 +108,7 @@ class State:
     id: int = 0
     sel_before: tuple | None = None              # the selection / cursor just before this step (undo gives
     cursor_before: int = 0                       # them back)
+    markers: tuple = ()
 
 
 @dataclass
@@ -43,6 +120,7 @@ class Clip:
     channels: int
     labels: tuple
     layout: str = ""
+    markers: tuple = ()                          # (name, start from the clip's start, end or None) inside it
 
 
 _state_ids = itertools.count(1)
@@ -87,7 +165,9 @@ class Document:
         self.frames = 0
         self.history: list[State] = []
         self.pos = -1
-        self.version = 0                          # changes with every edit / undo (caches use it)
+        self.version = 0                          # changes with every edit / undo of the sound (caches use it)
+        self.markers: tuple = ()                  # Marker, sorted by time
+        self.mversion = 0                         # changes with every change of the markers
         self.saved_id = 0
         self.zero = Source.zero(self.channels)
         if not self.labels:
@@ -234,7 +314,7 @@ class Document:
     # ── history ───────────────────────────────────────────────
     def _push(self, label: str, sel_before=None, cursor_before: int = 0) -> None:
         st = State(self.pieces, label, self.rate, self.channels, tuple(self.labels), self.layout, self.sel,
-                   self.cursor, next(_state_ids), sel_before, cursor_before)
+                   self.cursor, next(_state_ids), sel_before, cursor_before, self.markers)
         del self.history[self.pos + 1:]
         self.history.append(st)
         self.pos = len(self.history) - 1
@@ -242,8 +322,14 @@ class Document:
     def _restore(self, st: State) -> None:
         if (st.rate, st.channels) != (self.rate, self.channels):
             self.zero = Source.zero(st.channels)
+        same = st.pieces is self.pieces and (st.rate, st.channels, tuple(st.labels)) == \
+            (self.rate, self.channels, tuple(self.labels))
         self.rate, self.channels, self.labels, self.layout = st.rate, st.channels, st.labels, st.layout
-        self._set(st.pieces)
+        if not same:
+            self._set(st.pieces)
+        if st.markers != self.markers:
+            self.markers = st.markers
+            self.mversion += 1
         self.sel = self._clip_sel(st.sel)
         self.cursor = min(st.cursor, self.frames)
 
@@ -300,12 +386,15 @@ class Document:
         a, b = max(0, min(sel[0], self.frames)), max(0, min(sel[1], self.frames))
         return (a, b) if b > a else None
 
-    def _apply(self, label: str, pieces, sel=None, cursor=None, **meta) -> None:
+    def _apply(self, label: str, pieces, sel=None, cursor=None, markers=None, **meta) -> None:
         before = (self.sel, self.cursor)
         for k, v in meta.items():
             setattr(self, k, v)
         if "channels" in meta:
             self.zero = Source.zero(self.channels)
+        if markers is not None and tuple(markers) != self.markers:
+            self.markers = sort_markers(markers)
+            self.mversion += 1
         self._set(pieces)
         self.sel = self._clip_sel(sel)
         self.cursor = max(0, min(self.frames, self.cursor if cursor is None else cursor))
@@ -322,18 +411,29 @@ class Document:
         a, b = self._range(a, b)
         if b <= a:
             return None
-        return Clip(tuple(self.slice(a, b)), b - a, self.rate, self.channels, tuple(self.labels), self.layout)
+        inside = tuple((m.name, m.pos - a, None if m.end is None else m.end - a) for m in self._inside(a, b))
+        return Clip(tuple(self.slice(a, b)), b - a, self.rate, self.channels, tuple(self.labels), self.layout,
+                    inside)
 
     def delete(self, a: int, b: int, label: str = "delete") -> None:
         a, b = self._range(a, b)
         if b <= a:
             return
-        self._apply(label, self.slice(0, a) + self.slice(b, self.frames), None, a)
+        self._apply(label, self.slice(0, a) + self.slice(b, self.frames), None, a,
+                    remap_markers(self.markers, a, b, 0))
+
+    def _inside(self, a: int, b: int) -> list:
+        """The markers in [a, b) and the regions wholly inside it (what Copy takes along)."""
+        return [m for m in self.markers if a <= m.pos and (m.pos < b if m.end is None else m.end <= b)]
 
     def cut(self, a: int, b: int, label: str = "cut") -> Clip | None:
+        """Copy + delete; the markers that went to the clipboard leave the document (one at a too)."""
         clip = self.copy(a, b)
         if clip:
-            self.delete(a, b, label)
+            a, b = self._range(a, b)
+            gone = {m.id for m in self._inside(a, b)}
+            ms = tuple(m for m in remap_markers(self.markers, a, b, 0) if m.id not in gone)
+            self._apply(label, self.slice(0, a) + self.slice(b, self.frames), None, a, ms)
         return clip
 
     def fits(self, clip: Clip) -> bool:
@@ -344,8 +444,10 @@ class Document:
         if not self.fits(clip):
             raise ValueError("the clip has another rate / number of channels")
         a, b = self._range(a, a if b is None else b)
+        ms = remap_markers(self.markers, a, b, clip.frames) + \
+            tuple(new_marker(nm, a + p, None if e is None else a + e) for nm, p, e in clip.markers)
         self._apply(label, self.slice(0, a) + list(clip.pieces) + self.slice(b, self.frames),
-                    (a, a + clip.frames), a + clip.frames)
+                    (a, a + clip.frames), a + clip.frames, ms)
 
     def silence(self, a: int, b: int, label: str = "silence") -> None:
         a, b = self._range(a, b)
@@ -358,14 +460,15 @@ class Document:
         if n <= 0:
             return
         self._apply(label, self.slice(0, at) + [(self.zero, 0, int(n))] + self.slice(at, self.frames),
-                    (at, at + int(n)), at)
+                    (at, at + int(n)), at, remap_markers(self.markers, at, at, int(n)))
 
     def trim(self, a: int, b: int, label: str = "trim") -> None:
         """Keep only [a, b) (Sound Forge's «Trim/Crop»)."""
         a, b = self._range(a, b)
         if b <= a or (a, b) == (0, self.frames):
             return
-        self._apply(label, self.slice(a, b), None, 0)
+        ms = remap_markers(remap_markers(self.markers, b, self.frames, 0), 0, a, 0)
+        self._apply(label, self.slice(a, b), None, 0, ms)
 
     def keep(self, a: int, b: int, a2: int, b2: int, label: str = "trim silence") -> None:
         """Of [a, b) keep only [a2, b2) — the rest of the document stays (Обрезать тишину: no sound is written).
@@ -376,19 +479,96 @@ class Document:
             return
         whole = (a, b) == (0, self.frames)
         sel = None if whole or not self.sel else (a, a + b2 - a2)
-        self._apply(label, self.slice(0, a) + self.slice(a2, b2) + self.slice(b, self.frames), sel, a)
+        ms = remap_markers(remap_markers(self.markers, b2, b, 0), a, a2, 0)
+        self._apply(label, self.slice(0, a) + self.slice(a2, b2) + self.slice(b, self.frames), sel, a, ms)
 
-    def replace(self, a: int, b: int, src: Source, label: str, sel=..., **meta) -> None:
+    def replace(self, a: int, b: int, src: Source, label: str, sel=..., remap: str = "scale", add_markers=(),
+                **meta) -> None:
         """Put the whole source in place of [a, b) — the result of an effect. The source may be longer or
-        shorter (tempo, resample); with meta (rate, channels …) the whole document is replaced."""
+        shorter (tempo, resample); with meta (rate, channels …) the whole document is replaced. remap: what the
+        markers in [a, b) do ("scale": the same sound changed, "cut": other sound — a recording over the
+        selection); add_markers: (name, start, end) from a to add in the same step."""
         a, b = self._range(a, b)
         new = [(src, 0, src.frames)]
         if meta:
             pieces, s = new, (a, a + src.frames) if sel is ... else sel
+            ms = remap_markers(self.markers, 0, self.frames, src.frames, "scale")
         else:
             pieces = self.slice(0, a) + new + self.slice(b, self.frames)
             s = (a, a + src.frames) if sel is ... else sel
-        self._apply(label, pieces, s, a, **meta)
+            ms = remap_markers(self.markers, a, b, src.frames, remap)
+        if add_markers:
+            ms = ms + tuple(new_marker(nm, a + p, None if e is None else a + e) for nm, p, e in add_markers)
+        self._apply(label, pieces, s, a, ms, **meta)
+
+    # ── markers and regions ───────────────────────────────────
+    def marker(self, mid: int) -> Marker | None:
+        return next((m for m in self.markers if m.id == mid), None)
+
+    def _mark(self, label: str, markers) -> None:
+        """A step that changes only the markers (the sound and `version` stay)."""
+        markers = sort_markers(markers)
+        if markers == self.markers:
+            return
+        before = (self.sel, self.cursor)
+        self.markers = markers
+        self.mversion += 1
+        self._push(label, *before)
+
+    def add_marker(self, pos: int, name: str, label: str = "add marker") -> Marker:
+        m = new_marker(name, max(0, min(self.frames, int(pos))))
+        self._mark(label, self.markers + (m,))
+        return m
+
+    def add_region(self, a: int, b: int, name: str, label: str = "add region") -> Marker | None:
+        a, b = self._range(a, b)
+        if b <= a:
+            return None
+        m = new_marker(name, a, b)
+        self._mark(label, self.markers + (m,))
+        return m
+
+    def update_marker(self, mid: int, name: str | None = None, pos: int | None = None, end: int | None = None,
+                      label: str = "move marker") -> Marker | None:
+        """Rename / move a marker; a region moved by pos keeps its length unless end is given too."""
+        m = self.marker(mid)
+        if m is None:
+            return None
+        nm = m.name if name is None else str(name)
+        p = m.pos if pos is None else max(0, min(self.frames, int(pos)))
+        e = m.end
+        if m.end is not None:
+            if end is not None:
+                e = max(0, min(self.frames, int(end)))
+            elif pos is not None:
+                e = min(self.frames, p + m.length)
+            p, e = sorted((p, e))
+            if e <= p:
+                return m
+        new = Marker(m.id, nm, p, e)
+        if new == m:
+            return m
+        self._mark(label, tuple(new if x.id == mid else x for x in self.markers))
+        return new
+
+    def remove_markers(self, ids, label: str = "delete marker") -> None:
+        ids = set(ids)
+        self._mark(label, tuple(m for m in self.markers if m.id not in ids))
+
+    def set_markers(self, items, label: str = "markers", replace: bool = False) -> None:
+        """Add (or with replace put in place of all) markers from (name, pos, end) items (an import)."""
+        new = tuple(new_marker(nm, p, e) for nm, p, e in items
+                    if 0 <= p <= self.frames and (e is None or e != p))
+        self._mark(label, new if replace else self.markers + new)
+
+    def marker_points(self) -> list[int]:
+        """Every marker position, region start and end, sorted (Ctrl+← / →, snapping)."""
+        pts = set()
+        for m in self.markers:
+            pts.add(m.pos)
+            if m.end is not None:
+                pts.add(m.end)
+        return sorted(pts)
 
     def sources(self) -> set:
         """Every source the history still uses (the working files to keep)."""
