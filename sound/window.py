@@ -380,6 +380,8 @@ class MainWindow(QMainWindow, FilmCommands):
                 act = A(m, icon, t("fx_" + key) + "…", lambda k=key: self.effect_dialog(k))
             act.setObjectName("fx_" + key)
             self.fx_actions[key] = act
+        m.addSeparator()
+        self.a_spectral = A(m, "fa6s.paintbrush", t("se_title") + "…", self.spectral_panel, "Ctrl+Shift+R")
         self.build_film_menu(mb, A)                 # 2.0: Фильм / Film
         m = mb.addMenu(t("m_tools"))
         self.a_stats = A(m, "fa6s.table-list", t("stats") + "…", self.statistics_dialog, "Ctrl+I")
@@ -1335,6 +1337,17 @@ class MainWindow(QMainWindow, FilmCommands):
         self._make_room(d, b - a)
         self.run_job(t("processing", label), work, done, d)
 
+    def spectral_panel(self) -> None:
+        """Restoration → Spectral editing: the window beside the wave (one at a time)."""
+        from .specui import SpectralPanel
+        if self.doc is None:
+            return
+        if getattr(self, "se_panel", None) is None:
+            self.se_panel = SpectralPanel(self)
+        self.se_panel.show()
+        self.se_panel.raise_()
+        self.se_panel.activateWindow()
+
     def take_noise_sample(self) -> None:
         """Effects → Take a noise sample: the noise spectrum of the selection, kept for the session."""
         from . import fx
@@ -2014,6 +2027,9 @@ class MainWindow(QMainWindow, FilmCommands):
             a.setEnabled(has and not busy)
         for k, a in self.fx_actions.items():
             a.setEnabled(has and not busy and (k != "take_noise" or sel))
+        self.a_spectral.setEnabled(has)
+        if getattr(self, "se_panel", None) is not None:
+            self.se_panel._sync()
         for key in ("fx_eq", "fx_nr"):
             self.tb[key].setEnabled(has and not busy)
         self.a_to_mono.setEnabled(has and not busy and d.channels == 2)

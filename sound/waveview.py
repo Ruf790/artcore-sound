@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 from PySide6.QtCore import QLineF, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from . import spectrogram as sg
@@ -71,6 +71,7 @@ class WaveView(QWidget):
     markerMoved = Signal(int, int, object)   # id, new position, new end (a region; None for a marker)
     markerRename = Signal(int)               # a double click on a marker's flag / a region's bar
     tilesReady = Signal()                    # (from a worker thread) more spectrogram tiles are in the cache
+    specEdited = Signal()                    # 2.0: the spectral selection changed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +104,12 @@ class WaveView(QWidget):
         self._sg_timer.timeout.connect(self._sg_arrived)
         self.tilesReady.connect(self._sg_timer.start)
         self._mdrag = None                   # dragging a marker: {id, part, grab, pos, end, moved}
+        # 2.0, spectral editing: the tool (time: the usual selection; rect / brush / lasso: in time and frequency
+        # on the spectrogram), the brush's size in pixels, the shape being drawn, the brush's circle under the mouse
+        self.tool = "time"
+        self.brush_px = 16
+        self._sdrag = None
+        self._hover = None
 
     def sizeHint(self) -> QSize:
         return QSize(900, 420)
@@ -312,6 +319,159 @@ class WaveView(QWidget):
             wh = max(12.0, math.floor(lh * WAVE_SHARE))
             return (top, wh), (top + wh + 1, max(1.0, lh - wh - 1))
         return (top, lh), None
+
+    # ── spectral editing (2.0) ────────────────────────────────
+    def spec_part_at(self, y: float) -> tuple[int, float, float] | None:
+        """(channel, top, height) of the spectrogram part under y (widget coordinates), or None."""
+        d = self.doc
+        if d is None or self.mode == "wave" or y < RULER_H:
+            return None
+        lanes = self.lanes_rect()
+        for c, (top, lh) in enumerate(self.lane_geom(lanes.height(), d.channels)):
+            sp = self.lane_parts(top, lh)[1]
+            if sp is not None and RULER_H + sp[0] <= y < RULER_H + sp[0] + sp[1]:
+                return c, RULER_H + sp[0], sp[1]
+        return None
+
+    def frame_f(self, x: float) -> float:
+        return max(0.0, min(float(self.doc.frames), self.start() + (x - GUTTER_W) * self.spp()))
+
+    def hz_at(self, y: float, top: float, h: float) -> float:
+        u = 1.0 - (y - top) / max(1.0, h)
+        return float(sg.f_of_frac(u, self.doc.rate, self.sg_settings.scale))
+
+    def y_of_hz(self, hz: float, top: float, h: float) -> float:
+        return top + h * (1.0 - float(sg.y_frac(max(hz, 1e-9), self.doc.rate, self.sg_settings.scale)))
+
+    def set_tool(self, tool: str) -> None:
+        self.tool = tool if tool in ("time", "rect", "brush", "lasso") else "time"
+        self._sdrag = None
+        self._hover = None
+        self.unsetCursor()
+        self.update()
+
+    def clear_spec(self) -> None:
+        if self.doc is not None and self.doc.spec_sel is not None:
+            self.doc.spec_sel = None
+            self.specEdited.emit()
+            self.update()
+
+    def _spec_press(self, ev, part) -> None:
+        from .spectral import Shape
+        d = self.doc
+        c, top, h = part
+        x, y = ev.position().x(), ev.position().y()
+        mods = ev.modifiers()
+        op = "sub" if mods & Qt.AltModifier else "add"
+        chs = tuple(range(d.channels)) if mods & Qt.ControlModifier else (c,)
+        pt = (self.frame_f(x), self.hz_at(y, top, h))
+        rx = ry = 0.0
+        if self.tool == "brush":
+            rx, ry = self.brush_px * self.spp(), self.brush_px / max(1.0, h)
+        sh = Shape(self.tool, [pt, pt] if self.tool == "rect" else [pt], op, rx, ry, chs)
+        self._sdrag = {"shape": sh, "keep": bool(mods & (Qt.ShiftModifier | Qt.AltModifier)), "top": top, "h": h,
+                       "x0": x, "y0": y}
+        self.update()
+
+    def _spec_move(self, x: float, y: float) -> None:
+        sd = self._sdrag
+        top, h = sd["top"], sd["h"]
+        y = max(top, min(top + h, y))
+        x = max(GUTTER_W, min(self.width(), x))
+        pt = (self.frame_f(x), self.hz_at(y, top, h))
+        sh = sd["shape"]
+        if sh.kind == "rect":
+            sh.pts[1] = pt
+        else:
+            last = sh.pts[-1]
+            if abs(self.x_of(last[0]) - x) + abs(self.y_of_hz(last[1], top, h) - y) >= 2:
+                sh.pts.append(pt)
+        self.update()
+
+    def _spec_release(self) -> None:
+        from .spectral import SpecSel
+        sd, self._sdrag = self._sdrag, None
+        d = self.doc
+        sh = sd["shape"]
+        small = (sh.kind == "rect" and abs(self.x_of(sh.pts[0][0]) - self.x_of(sh.pts[1][0])) < 3) or \
+                (sh.kind == "lasso" and len(sh.pts) < 3)
+        if small:
+            if not sd["keep"]:                            # a click: the selection goes
+                self.clear_spec()
+            self.update()
+            return
+        sel = d.spec_sel
+        if sel is None or not sd["keep"] or sel.rate != d.rate:
+            sel = SpecSel(d.rate, self.sg_settings.scale, ())
+        sel.add(sh)
+        d.spec_sel = sel if not sel.empty() else None
+        self.specEdited.emit()
+        self.update()
+
+    def _shape_path(self, sh, top: float, h: float) -> QPainterPath:
+        path = QPainterPath()
+        if sh.kind == "rect":
+            (ta, fa), (tb, fb) = sh.pts[0], sh.pts[-1]
+            xa, xb = sorted((self.x_of(ta), self.x_of(tb)))
+            ya, yb = sorted((self.y_of_hz(fa, top, h), self.y_of_hz(fb, top, h)))
+            path.addRect(QRectF(xa, ya, max(1.0, xb - xa), max(1.0, yb - ya)))
+        elif sh.kind == "lasso":
+            path.addPolygon(QPolygonF([QPointF(self.x_of(tt), self.y_of_hz(ff, top, h)) for tt, ff in sh.pts]))
+            path.closeSubpath()
+        else:
+            path.setFillRule(Qt.WindingFill)
+            rx, ry = sh.rx / self.spp(), sh.ry * h
+            a, b = self.visible()
+            for tt, ff in sh.pts:
+                if a - sh.rx <= tt <= b + sh.rx:
+                    path.addEllipse(QPointF(self.x_of(tt), self.y_of_hz(ff, top, h)), rx, ry)
+        return path
+
+    def _paint_spec_sel(self, p: QPainter) -> None:
+        d = self.doc
+        sel = d.spec_sel
+        shapes = list(sel.shapes) if sel is not None else []
+        if self._sdrag is not None:
+            shapes.append(self._sdrag["shape"])
+        if not shapes or self.mode == "wave":
+            return
+        lanes = self.lanes_rect()
+        acc = style.qcolor(style.ACCENT)
+        fill = QColor(acc)
+        fill.setAlpha(70)
+        for c, (top, lh) in enumerate(self.lane_geom(lanes.height(), d.channels)):
+            sp = self.lane_parts(top, lh)[1]
+            if sp is None:
+                continue
+            tp, h = RULER_H + sp[0], sp[1]
+            area = QPainterPath()
+            any_here = False
+            for sh in shapes:
+                chs = sh.chs if sh.chs is not None else (sel.channels if sel is not None else ())
+                if c not in chs:
+                    continue
+                path = self._shape_path(sh, tp, h)
+                if sh.op == "add":
+                    area = area.united(path) if any_here else path
+                    any_here = True
+                elif any_here:
+                    area = area.subtracted(path)
+            if not any_here:
+                continue
+            p.save()
+            p.setClipRect(QRectF(GUTTER_W, tp, lanes.width(), h), Qt.IntersectClip)
+            p.setPen(QPen(acc, 1.5))
+            p.setBrush(fill)
+            p.drawPath(area)
+            p.restore()
+
+    def _paint_brush(self, p: QPainter) -> None:
+        if self.tool != "brush" or self._hover is None or self._sdrag is not None:
+            return
+        x, y = self._hover
+        p.setPen(QPen(style.qcolor(style.TEXT), 1, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(x, y), self.brush_px, self.brush_px)
 
     # ── the spectrogram layer ─────────────────────────────────
     def _sg_paint_layer(self, lanes: QRectF, view_key) -> QPixmap | None:
@@ -585,6 +745,8 @@ class WaveView(QWidget):
             p.fillRect(QRectF(x1, RULER_H, x2 - x1, lanes.height()), style.qcolor(style.W_SEL))
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
             p.fillRect(QRectF(x1, TIME_H - 5, x2 - x1, 5), style.qcolor(style.ACCENT))
+        self._paint_spec_sel(p)
+        self._paint_brush(p)
         xc = self.x_of(d.cursor)
         pen = QPen(style.qcolor(style.W_CURSOR), 1, Qt.DashLine)
         p.setPen(pen)
@@ -718,6 +880,11 @@ class WaveView(QWidget):
             return
         if ev.button() != Qt.LeftButton or x < GUTTER_W:
             return
+        if self.tool != "time" and y >= RULER_H:
+            part = self.spec_part_at(y)
+            if part is not None:
+                self._spec_press(ev, part)
+            return
         f = self.frame_at(x)
         m, part = self.marker_at(x, y)
         if m is not None:
@@ -759,6 +926,20 @@ class WaveView(QWidget):
             return
         if self._mdrag is not None:
             self._drag_marker(ev.position().x())
+            return
+        if self._sdrag is not None:
+            self._spec_move(ev.position().x(), ev.position().y())
+            return
+        if self.tool != "time":
+            pos = ev.position()
+            on = self.spec_part_at(pos.y()) is not None and pos.x() >= GUTTER_W
+            self._hover = (pos.x(), pos.y()) if on else None
+            if on:
+                self.setCursor(Qt.CrossCursor)
+            else:
+                self.unsetCursor()
+            if self.tool == "brush":
+                self.update()
             return
         if self._drag is None:
             m, part = self.marker_at(ev.position().x(), ev.position().y())
@@ -823,6 +1004,9 @@ class WaveView(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, ev) -> None:
+        if self._sdrag is not None:
+            self._spec_release()
+            return
         md, self._mdrag = self._mdrag, None
         if md is not None:
             if md["moved"]:
@@ -851,6 +1035,13 @@ class WaveView(QWidget):
             return
         dy = ev.angleDelta().y()
         dx = ev.angleDelta().x()
+        if self.tool == "brush" and ev.modifiers() & Qt.AltModifier:          # 2.0: the brush's size
+            steps = (dy or dx) / 120
+            self.brush_px = int(max(3, min(150, round(self.brush_px * 1.15 ** steps))))
+            self.specEdited.emit()
+            self.update()
+            ev.accept()
+            return
         if ev.modifiers() & Qt.ControlModifier:
             if dy:
                 self.zoom(0.8 ** (dy / 120), ev.position().x())

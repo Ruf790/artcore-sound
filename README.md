@@ -134,6 +134,8 @@
 | В конец | End |
 | Назад | ← |
 | Вперёд | → |
+| **Реставрация** | |
+| Спектральная правка | Ctrl+Shift+R |
 | **Фильм** | |
 | Окно видео | F8 |
 | Автосинхронизация с эталоном | Ctrl+Shift+Y |
@@ -249,6 +251,8 @@ An audio editor for Windows in the spirit of Sound Forge.
 | Go to the end | End |
 | Rewind | ← |
 | Forward | → |
+| **Restoration** | |
+| Spectral editing | Ctrl+Shift+R |
 | **Film** | |
 | Video window | F8 |
 | Auto sync to a reference | Ctrl+Shift+Y |

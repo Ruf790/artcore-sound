@@ -476,6 +476,7 @@ def _selftest_20(src, session, tmp: str, lines: list) -> None:
     if abs(mdb + 6) > 0.3:
         raise RuntimeError("the input monitor's volume")
     _selftest_film(session, tmp, lines)
+    _selftest_restore(session, tmp, lines)
 
 
 def _selftest_film(session, tmp: str, lines: list) -> None:
@@ -535,6 +536,108 @@ def _selftest_film(session, tmp: str, lines: list) -> None:
             raise RuntimeError("libmpv did not seek")
     finally:
         p.terminate()
+
+
+def _selftest_restore(session, tmp: str, lines: list) -> None:
+    """2.0 block 2: every restoration effect on sound made for it (hum, clipping, sibilance, crackle, noise) — what
+    it takes away and what it keeps, measured; a tone erased by spectral editing, the rest untouched; a film's 5.1
+    returned with a stereo track, every channel in its place."""
+    import numpy as np
+
+    from . import film, fx, media, spectral, store
+    from .doc import Document
+    rate = 48000
+    t = np.arange(4 * rate) / rate
+    rng = np.random.default_rng(1)
+
+    def doc(x):
+        x = np.asarray(x, np.float32)
+        x = x[:, None] if x.ndim == 1 else x
+        d = Document(rate=rate, channels=x.shape[1], folder=session.folder(), labels=("M",) * x.shape[1])
+        d.set_initial(store.from_array(d.folder, x))
+        return d
+
+    def run(key, x, values):
+        d = doc(x)
+        src = fx.render(d, 0, d.frames, fx.get(key), values)
+        return src.read(0, src.frames)[:, 0].astype(np.float64)
+
+    def amp(y, f, sl):
+        m = np.stack((np.sin(2 * np.pi * f * t[sl]), np.cos(2 * np.pi * f * t[sl])), axis=1)
+        return float(np.hypot(*np.linalg.lstsq(m, y[sl], rcond=None)[0]))
+
+    sl = slice(rate, 3 * rate)
+    mus = 0.25 * np.sin(2 * np.pi * 220 * t)
+    hum = 0.03 * np.sin(2 * np.pi * 50.1 * t) + 0.02 * np.sin(2 * np.pi * 150.3 * t)
+    y = run("dehum", mus + hum, {})
+    cut = 20 * np.log10(amp(hum, 50.1, sl) / max(1e-12, amp(y, 50.1, sl)))
+    keep = 20 * np.log10(amp(y, 220, sl) / 0.25)
+    lines.append(f"de-hum: 50.1 Hz down {cut:.1f} dB, the music {keep:+.2f} dB")
+    if cut < 20 or abs(keep) > 0.3:
+        raise RuntimeError("de-hum")
+    x = 0.5 * np.sin(2 * np.pi * 330 * t) + 0.35 * np.sin(2 * np.pi * 550 * t + 1)
+    c = np.clip(x, -0.55, 0.55)
+    y = run("declip", c, {"headroom": 0.0})
+    hot = np.abs(c) >= 0.55
+    gain = np.sqrt(np.mean((c[hot] - x[hot]) ** 2)) / np.sqrt(np.mean((y[hot] - x[hot]) ** 2))
+    lines.append(f"clipping repair: the error at the clipped samples {20 * np.log10(gain):.1f} dB smaller")
+    if gain < 4:
+        raise RuntimeError("clipping repair")
+    from scipy import signal
+    sos = signal.butter(4, [5000, 9000], btype="bandpass", fs=rate, output="sos")
+    ss = signal.sosfilt(sos, rng.standard_normal(len(t)))
+    ss = 0.6 * ss / np.abs(ss).max() * ((t % 1.0) > 0.6)
+    v = 0.3 * np.sin(2 * np.pi * 180 * t)
+    y = run("deess", v + ss, {"freq": 6500.0, "threshold": -30.0, "reduction": 12.0})
+    hi = 20 * np.log10(np.std(signal.sosfilt(sos, v + ss)) / np.std(signal.sosfilt(sos, y)))
+    lines.append(f"de-esser: the sibilance down {hi:.1f} dB")
+    if hi < 5:
+        raise RuntimeError("de-esser")
+    cr = np.zeros(len(t))
+    pos = rng.integers(10, len(t) - 10, 2000)
+    cr[pos] = rng.uniform(0.03, 0.15, len(pos)) * rng.choice((-1, 1), len(pos))
+    y = run("decrackle", mus + cr, {"sensitivity": 60.0})
+    dcr = 20 * np.log10(np.std(cr) / np.std(y - mus))
+    lines.append(f"crackle removal: the crackle down {dcr:.1f} dB")
+    if dcr < 8:
+        raise RuntimeError("crackle removal")
+    on = (t % 1.0) < 0.5
+    tone = 0.3 * np.sin(2 * np.pi * 700 * t) * on
+    noise = 0.02 * rng.standard_normal(len(t))
+    y = run("nr_auto", tone + noise, {"reduction": 18.0})
+    gaps = (~on) & (t > 2.0) & ((t % 1.0) > 0.65) & ((t % 1.0) < 0.95)
+    dn = 20 * np.log10(np.std(noise[gaps]) / np.std(y[gaps]))
+    lines.append(f"adaptive noise reduction: the noise in the pauses down {dn:.1f} dB")
+    if dn < 10:
+        raise RuntimeError("adaptive noise reduction")
+    tone3 = 0.2 * np.sin(2 * np.pi * 3000 * t) * ((t >= 1.0) & (t < 2.0))
+    d = doc(mus + tone3)
+    sel = spectral.SpecSel(rate, "log", (0,), [spectral.Shape("rect", [(int(0.95 * rate), 2500.0),
+                                                                         (int(2.05 * rate), 3600.0)])])
+    a, b, src = spectral.apply(d, sel, spectral.Params(action="erase"))
+    y = d.read(0, d.frames)[:, 0].astype(np.float64)
+    y[a:b] = src.read(0, src.frames)[:, 0]
+    left = amp(y, 3000, slice(int(1.1 * rate), int(1.9 * rate)))
+    same = np.array_equal(y[:a], d.read(0, a)[:, 0].astype(np.float64))
+    lines.append(f"spectral edit: the tone {20 * np.log10(max(1e-12, left) / 0.2):.0f} dB, outside untouched {same}")
+    if left > 1e-3 or not same:
+        raise RuntimeError("spectral editing")
+    # a film's 5.1 with a stereo track: a tone of its own in each channel, each found in its place
+    freqs = (310, 530, 730, 60, 1110, 1330)
+    tones = np.stack([0.2 * np.sin(2 * np.pi * f * t[:3 * rate]) for f in freqs], axis=1).astype(np.float32)
+    d6 = Document(rate=rate, channels=6, folder=session.folder(), labels=("L", "R", "C", "LFE", "Ls", "Rs"),
+                  layout="5.1(side)")
+    d6.set_initial(store.from_array(d6.folder, tones))
+    d6.film = {"path": os.path.join(tmp, "Фильм.mkv"), "track": 0, "index": 1, "fps": 25}
+    out = os.path.join(tmp, "Фильм stereo.mkv")
+    res = film.return_to_video(d6, film.Options(replace_index=1, codec="ac3", out_path=out, stereo="itu",
+                                                stereo_title="stereo"))
+    e = media.open_file(out, session.folder(), 0)
+    x = e.read(rate // 2, rate).astype(np.float64) * np.hanning(rate)[:, None]
+    got = [int(np.argmax(np.abs(np.fft.rfft(x[:, k])))) for k in range(6)]
+    lines.append(f"return to video, 5.1 + stereo: tracks {res.streams['audio']}, the tones at {got}")
+    if got != list(freqs) or res.stereo_track != res.track + 1:
+        raise RuntimeError("the channels of the returned film")
 
 
 def main() -> int:

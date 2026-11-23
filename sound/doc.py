@@ -162,6 +162,7 @@ class Document:
         self.markers: tuple = ()                  # Marker, sorted by time
         self.mversion = 0                         # changes with every change of the markers
         self.saved_id = 0
+        self.spec_sel = None                      # 2.0: the spectral selection (spectral.SpecSel), not in the history
         self.orphans: list = []                   # sources only the discarded redo branch used (the window deletes
         self.zero = Source.zero(self.channels)    # them once no clipboard or other document holds them either)
         if not self.labels:

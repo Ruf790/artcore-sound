@@ -4,10 +4,12 @@ selection while it plays (the status bar measured), the sample-level zoom, a 5.1
 the noise reduction with its noise sample, the reverb; (0.4) markers and regions with their list, the spectrum
 panel while playing, the spectrogram and «wave + spectrogram» views, Tools → Spectrum, the spectrogram settings and
 the Record window recording from the null input; (1.0) the batch window after a run, the Hotkeys window, the
-recovery offer, the error window and the long-film report (ARTCORE_STRESS_REPORT). Test sound is made by ffmpeg.
+recovery offer, the error window and the long-film report (ARTCORE_STRESS_REPORT); (2.0) the listening volume, the
+film tools, and the restoration — its menu, its effect windows (the hum found, the clipping found and marked), the
+spectral editing window beside a selection drawn on the spectrogram. Test sound is made by ffmpeg.
 
-Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick]   (--quick: the main window and 1.0's windows only —
-QT_SCALE_FACTOR=1.5 with it is the 150 % check)"""
+Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick | --restore]   (--quick: the main window and 1.0's
+windows only — QT_SCALE_FACTOR=1.5 with it is the 150 % check; --restore: the main window and the restoration only)"""
 import os
 import subprocess
 import sys
@@ -19,6 +21,7 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("ARTCORE_AUDIO", "null")
 TMP = tempfile.mkdtemp(prefix="artcore_sound_shots_")
+RESTORE = "--restore" in sys.argv
 os.environ.setdefault("ARTCORE_SOUND_DATA", os.path.join(TMP, "data"))
 
 SONG = ("aevalsrc='0.55*sin(2*PI*110*t)*exp(-mod(t,0.5)*5)+0.25*sin(2*PI*440*t+3*sin(2*PI*2*t))*(0.6+0.4*sin(2*PI*0.15*t))"
@@ -88,6 +91,15 @@ def main(out: str, lang: str = "ru") -> int:
             pump(0.1)
         w.grab().save(os.path.join(out, f"main_{theme}.png"))
         w.stop_play()
+        if RESTORE:
+            for x in w.docs:
+                x.mark_saved()
+            shoot_restore(w, out, theme, pump, lang)
+            for x in w.docs:
+                x.mark_saved()
+            w.close()
+            s.close()
+            continue
         if QUICK:
             for x in w.docs:
                 x.mark_saved()
@@ -288,6 +300,7 @@ def shoot_film(w, out: str, theme: str, pump, lang: str) -> None:
     pump(0.3)
     rd = filmui.ReturnDialog(d, w.cfg, w)
     rd.show()
+    rd.stereo.setChecked(True)
     pump(0.2)
     rd.grab().save(os.path.join(out, f"return_video_{theme}.png"))
     rd.reject()
@@ -323,6 +336,78 @@ def shoot_film(w, out: str, theme: str, pump, lang: str) -> None:
     pump(0.3)
     menu.grab().save(os.path.join(out, f"film_menu_{theme}.png"))
     menu.hide()
+    shoot_restore(w, out, theme, pump, lang)
+
+
+def shoot_restore(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 2: the Restoration menu; the hum removal window with the hum found; the clipping repair window with
+    the clipping found (marked on the wave behind it); the de-esser while it previews; crackle removal; adaptive noise
+    reduction; spectral editing — a selection drawn on the spectrogram (a rectangle and a brush stroke) with its
+    window."""
+    from sound import fxui, media
+    from sound.spectral import Shape, SpecSel
+    menu = next(a.menu() for a in w.menuBar().actions() if a.menu() is not None and
+                a.text() in ("Реставрация", "Restoration"))
+    menu.popup(w.mapToGlobal(w.rect().topLeft()))
+    pump(0.3)
+    menu.grab().save(os.path.join(out, f"restore_menu_{theme}.png"))
+    menu.hide()
+    path = os.path.join(TMP, "restore.wav")
+    if not os.path.exists(path):
+        ff("-f", "lavfi", "-i", "aevalsrc='clip(0.75*sin(2*PI*220*t)*(0.6+0.4*sin(2*PI*0.3*t))"
+           "+0.25*sin(2*PI*660*t)*exp(-mod(t,0.5)*4)+0.04*sin(2*PI*50.1*t)+0.025*sin(2*PI*150.3*t)"
+           "+0.18*sin(2*PI*3100*t)*between(mod(t,4),1.5,2.6)+0.01*(random(0)-0.5),-0.8,0.8)':s=48000:d=12:c=stereo",
+           "-ac", "2", "-c:a", "pcm_f32le", path)
+    d = media.open_file(path, w.session.folder())
+    w.add_doc(d)
+    pump(0.3)
+    for key in ("dehum", "declip", "deess", "decrackle", "nr_auto"):
+        dlg = fxui.EffectDialog(w, key, d, 0, d.frames, True)
+        dlg.show()
+        if key == "dehum":
+            t0 = time.time()
+            while not dlg.hum_label.text() and time.time() - t0 < 10:
+                pump(0.1)
+        if key == "declip":
+            dlg.b_find.click()
+            t0 = time.time()
+            while (not dlg.b_find.isEnabled() or not dlg.marks) and time.time() - t0 < 20:
+                pump(0.1)
+        if key == "deess":
+            dlg.set_values({**dlg.values, "freq": 3000.0, "threshold": -36.0})
+            dlg.b_preview.setChecked(True)
+            pump(1.0)
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"fx_{key}_{theme}.png"))
+        if key == "declip":
+            w.grab().save(os.path.join(out, f"declip_marks_{theme}.png"))
+        dlg.reject()
+        pump(0.1)
+    w.wave.set_marks(d, [])
+    w.set_view_mode("both")
+    w.wave.zoom_range(0, int(4.5 * d.rate))
+    w.spectral_panel()
+    panel = w.se_panel
+    panel.set_tool("brush")
+    sel = SpecSel(d.rate, w.wave.sg_settings.scale, ())
+    sel.add(Shape("rect", [(int(1.4 * d.rate), 1800.0), (int(2.7 * d.rate), 5500.0)], chs=(0, 1)))
+    sel.add(Shape("brush", [(int(0.2 * d.rate), 50.0), (int(4.3 * d.rate), 50.0)], rx=0.04 * d.rate, ry=0.03,
+                  chs=(0,)))
+    d.spec_sel = sel
+    w.wave.specEdited.emit()
+    w.wave.refresh()
+    from sound.waveview import GUTTER_W
+    part = next(w.wave.spec_part_at(y) for y in range(w.wave.height()) if w.wave.spec_part_at(y) is not None)
+    w.wave._hover = (GUTTER_W + 600, part[1] + part[2] * 0.4)
+    t0 = time.time()
+    while w.wave.sg_pending() and time.time() - t0 < 30:
+        pump(0.1)
+    pump(0.5)
+    w.grab().save(os.path.join(out, f"spectral_{theme}.png"))
+    panel.grab().save(os.path.join(out, f"spectral_panel_{theme}.png"))
+    panel.close()
+    w.set_view_mode("wave")
+    d.mark_saved()
 
 
 def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:
