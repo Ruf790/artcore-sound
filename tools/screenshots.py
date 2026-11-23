@@ -305,8 +305,12 @@ def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:
         from PySide6.QtWidgets import QTextBrowser
         tb = QTextBrowser()
         tb.setMarkdown(open(rep, encoding="utf-8").read())
-        tb.resize(1100, 1500)
+        tb.resize(900, 400)
         tb.show()
+        pump(0.1)
+        doc = tb.document()
+        doc.setTextWidth(tb.viewport().width())
+        tb.resize(int(doc.idealWidth()) + 40, int(doc.size().height()) + 30)
         pump(0.3)
         tb.grab().save(os.path.join(out, f"stress_report_{theme}.png"))
         tb.close()

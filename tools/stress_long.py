@@ -84,13 +84,16 @@ class MemWatch:
 
     def __init__(self):
         self._peak = self._ppeak = 0
+        self.all = [0, 0]                    # the peaks of the whole run
         self._run = True
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
         while self._run:
-            self._peak = max(self._peak, rss())
-            self._ppeak = max(self._ppeak, private_bytes())
+            r, p = rss(), private_bytes()
+            self._peak = max(self._peak, r)
+            self._ppeak = max(self._ppeak, p)
+            self.all = [max(self.all[0], r), max(self.all[1], p)]
             time.sleep(0.05)
 
     def reset(self):
@@ -179,7 +182,7 @@ class Report:
             self.data[key] = num if num is not None else value
 
     def markdown(self, head: list[str]) -> str:
-        out = head + ["", "| | | |", "|---|---|---|"]
+        out = head + ["", "| Stage | What | Result |", "|---|---|---|"]
         last = None
         for g, w, v in self.rows:
             out.append(f"| {'**' + g + '**' if g != last else ''} | {w} | {v} |")
@@ -276,7 +279,7 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
         k += 1
     rep.add("waveform", "zooming in and out about the middle", f"{k / (time.perf_counter() - t0):.0f} frames/s",
             "wave_zoom_fps", round(k / (time.perf_counter() - t0), 1))
-    rep.add("waveform", "peak memory while drawing", mb(mem.peak()[0]), "wave_rss", mem.peak()[0])
+    rep.add("waveform", "peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()), "wave_rss", mem.peak()[0])
     v.set_mode("spec")
     for label, spp in (("the whole film", n / w), ("10 minutes", 600 * d.rate / w), ("10 seconds", 10 * d.rate / w)):
         mem.reset()
@@ -298,7 +301,7 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
         rep.add("spectrogram", f"{label}: a new view fully drawn", f"{sum(lat) / len(lat) * 1000:.0f} ms "
                 f"(then {k / (time.perf_counter() - t0):.0f} frames/s)", f"sg_ms_{int(spp)}",
                 round(sum(lat) / len(lat) * 1000))
-    rep.add("spectrogram", "peak memory", mb(mem.peak()[0]), "sg_rss", mem.peak()[0])
+    rep.add("spectrogram", "peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()), "sg_rss", mem.peak()[0])
     v.set_mode("wave")
     v.close_engine()
 
@@ -321,14 +324,14 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
     for _i in range(200):
         d.undo()
     assert d.frames == n and len(d.markers) == results["chapters"]
-    rep.add("edit", "peak memory", mb(mem.peak()[0]))
+    rep.add("edit", "peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()))
 
     # analysis and processing
     mem.reset()
     st, sec = timed(analysis.analyze, d)
     rep.add("analysis", "LUFS + LRA + true peak of all of it", f"{sec:.1f} s ({d.duration() / sec:.0f}× real time), "
             f"{st.integrated:.1f} LUFS", "lufs_s", round(sec, 2))
-    rep.add("analysis", "peak memory", mb(mem.peak()[0]), "lufs_rss", mem.peak()[0])
+    rep.add("analysis", "peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()), "lufs_rss", mem.peak()[0])
     mem.reset()
     (src, res), sec = timed(proc.normalize, d, 0, n, "loudness", -23.0, -1.0)
     d.replace(0, n, src, "normalize")
@@ -367,9 +370,11 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
         _, sec = timed(media.save, d, p, fmt, opt)
         size = os.path.getsize(p)
         back = ff.probe(p)
+        chap = f", {len(back.chapters)} chapters" if fmt != "ac3" else ""        # a raw AC-3 stream has none
         rep.add("save", f"{media.FORMATS[fmt].name} {opt}", f"{sec:.1f} s ({d.duration() / sec:.0f}× real time), "
-                f"{gb(size)}, {len(back.chapters)} chapters", f"save_{fmt}_s", round(sec, 2))
-        rep.add("save", f"{media.FORMATS[fmt].name}: peak memory", mb(mem.peak()[0]), f"save_{fmt}_rss", mem.peak()[0])
+                f"{gb(size)}{chap}", f"save_{fmt}_s", round(sec, 2))
+        rep.add("save", f"{media.FORMATS[fmt].name}: peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()),
+                f"save_{fmt}_rss", mem.peak()[0])
         if abs(back.duration - d.duration()) > 1.0:
             raise RuntimeError(f"{fmt}: {back.duration} s, not {d.duration()} s")
         os.remove(p)
@@ -384,8 +389,9 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
     rep.add("close", "the session folder removed", ("no!" if left else f"yes, {sec:.2f} s"), "session_removed", not left)
     free1 = shutil.disk_usage(os.path.dirname(path)).free
     rep.add("close", "disk space back", f"{gb(free1 - free0 + 0)} difference", "disk_diff", free1 - free0)
-    rep.add("process", "peak memory of the whole run (RSS)", mb(max(r for r in [mem.peak()[0]] + [
-        v for k, v in rep.data.items() if k.endswith("_rss") and isinstance(v, int)])), "rss_peak")
+    peak_all = mem.all
+    rep.add("process", "peak memory of the whole run: RSS (with the mapped sound) / private",
+            f"{mb(peak_all[0])} / {mb(peak_all[1])}", "rss_peak", peak_all[0])
     mem.stop()
     md = rep.markdown(head)
     with open(os.path.join(out, "report.md"), "w", encoding="utf-8") as f:
