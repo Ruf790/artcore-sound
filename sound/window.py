@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLay
 from . import APP_TITLE, AUDIO_EXT, VERSION, VIDEO_EXT, analysis, config, ff, media, proc, style, winint
 from . import spectrogram as sgm
 from .doc import Document, fmt_time, parse_time
+from .errors import human as human_error
 from .i18n import fmt_bytes, t
 from .player import Player
 from .waveview import Meters, Overview, WaveView
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
         self.stats_dlg = None
         self.spectrum_dlg = None
         self.rec_dlg = None
+        self.batch_win = None
         self._recorded = 0
         self.fx_dlg = None                      # the effect window while it is open
         self.job = None                         # (label, Progress) while a long job runs
@@ -341,6 +343,10 @@ class MainWindow(QMainWindow):
                 continue
             if key == "take_noise":
                 act = A(m, icon, t("fx_take_noise"), self.take_noise_sample)
+                self.fx_actions["save_noise"] = A(m, "fa6s.floppy-disk", t("nr_save_sample") + "…",
+                                                  self.save_noise_sample)
+                self.fx_actions["load_noise"] = A(m, "fa6s.folder-open", t("nr_load_sample") + "…",
+                                                  self.load_noise_sample)
             else:
                 act = A(m, icon, t("fx_" + key) + "…", lambda k=key: self.effect_dialog(k))
             act.setObjectName("fx_" + key)
@@ -351,6 +357,8 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self.a_sg_mode = A(m, "fa6s.chart-area", t("sg_toggle"), self._toggle_spectrogram, "F7")
         m.addAction(self.a_sg_settings)
+        m.addSeparator()
+        self.a_batch = A(m, "fa6s.layer-group", t("bt_title") + "…", self.batch_window, "Ctrl+B")
         m = mb.addMenu(t("m_transport"))
         self.a_play = A(m, "fa6s.play", t("play"), self.play_toggle, "Space")
         self.a_play_all = A(m, "fa6s.circle-play", t("play_all"), self.play_all, "Shift+Space")
@@ -781,7 +789,7 @@ class MainWindow(QMainWindow):
             except media.Cancelled:
                 self.bridge.done.emit(None, "cancel", on_done)
             except Exception as e:
-                self.bridge.done.emit(None, str(e) or type(e).__name__, on_done)
+                self.bridge.done.emit(None, human_error(e), on_done)
         threading.Thread(target=go, daemon=True).start()
 
     def _on_progress(self, f: float) -> None:
@@ -1240,6 +1248,66 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_TITLE, t("nr_need_sel"))
             return
         self._toast(t("nr_taken", f"{prof['seconds']:.2f}"))
+
+    def save_noise_sample(self) -> None:
+        """Effects → Save the noise sample…: the sample taken into a file (*.acnoise) — the batch's noise reduction
+        and a later session use it."""
+        from . import batch, fx
+        prof = fx.get("nr").profile
+        if prof is None:
+            QMessageBox.information(self, APP_TITLE, t("nr_no_sample"))
+            return
+        d = self.doc
+        stem = os.path.splitext(d.name)[0] if d is not None and d.name else "noise"
+        start = os.path.join(self.cfg.get("noise_dir") or self.cfg.get("save_dir") or "", f"{stem} noise{batch.NOISE_EXT}")
+        path, _f = QFileDialog.getSaveFileName(self, t("nr_save_sample"), start,
+                                               t("nr_file_filter") + f" (*{batch.NOISE_EXT})")
+        if not path:
+            return
+        if not path.lower().endswith(batch.NOISE_EXT):
+            path += batch.NOISE_EXT
+        try:
+            batch.save_noise_profile(path, prof)
+        except OSError as e:
+            QMessageBox.warning(self, APP_TITLE, human_error(e))
+            return
+        self.cfg["noise_dir"] = os.path.dirname(path)
+        config.save(self.cfg)
+        self._toast(t("nr_saved", os.path.basename(path)))
+
+    def load_noise_sample(self) -> None:
+        from . import batch, fx
+        path, _f = QFileDialog.getOpenFileName(self, t("nr_load_sample"), self.cfg.get("noise_dir") or "",
+                                               t("nr_file_filter") + f" (*{batch.NOISE_EXT})")
+        if not path:
+            return
+        try:
+            prof = batch.load_noise_profile(path)
+        except (OSError, ValueError, KeyError) as e:
+            QMessageBox.warning(self, APP_TITLE, t("bt_profile_bad", os.path.basename(path)) + "\n" + str(e))
+            return
+        d = self.doc
+        if d is not None and d.rate != prof["rate"]:
+            prof = batch.adapt_noise_profile(prof, d.rate)
+        fx.get("nr").profile = prof
+        self.cfg["noise_dir"] = os.path.dirname(path)
+        config.save(self.cfg)
+        self._toast(t("nr_loaded", os.path.basename(path), f"{prof.get('seconds', 0):.2f}"))
+
+    # ── batch processing (1.0) ────────────────────────────────
+    def batch_window(self) -> None:
+        from .batchui import BatchWindow
+        if self.batch_win is None:
+            self.batch_win = BatchWindow(self)
+            self.batch_win.finished.connect(self._batch_closed)
+        self.batch_win.show()
+        self.batch_win.raise_()
+        self.batch_win.activateWindow()
+
+    def _batch_closed(self, _r=0) -> None:
+        if self.batch_win is not None:
+            self.batch_win.deleteLater()
+        self.batch_win = None
 
     # ── markers and regions (0.4) ─────────────────────────────
     def _markers_changed(self) -> None:
@@ -2058,6 +2126,15 @@ class MainWindow(QMainWindow):
             self.open_paths(paths)
 
     def closeEvent(self, ev) -> None:
+        if self.batch_win is not None:
+            if self.batch_win._running() and \
+                    QMessageBox.question(self, APP_TITLE, t("bt_quit_q")) != QMessageBox.Yes:
+                ev.ignore()
+                return
+            if self.batch_win.runner is not None and self.batch_win.runner.running:
+                self.batch_win.runner.cancel()
+                self.batch_win.runner.wait(30)
+            self.batch_win.close()
         if self.rec_dlg is not None:                # a recording in progress becomes a document (asked below)
             self.rec_dlg.reject()
         if self.job:

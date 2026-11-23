@@ -55,20 +55,24 @@ def ch_layout_args(channels: int, layout: str) -> list[str]:
 
 
 # ── opening ───────────────────────────────────────────────────
-def decode(path: str, track: ff.Track, folder: str, progress: Progress | None = None) -> store.Source:
-    """Decode the track into a new source. Raises Cancelled, or RuntimeError with ffmpeg's last words."""
+def decode(path: str, track: ff.Track, folder: str, progress: Progress | None = None,
+           limit: float = 0.0) -> store.Source:
+    """Decode the track (its first `limit` seconds when given) into a new source. Raises Cancelled, or
+    RuntimeError with ffmpeg's last words."""
     progress = progress or Progress()
     exe = ff.ffmpeg()
     if not exe:
         raise RuntimeError("ffmpeg not found")
     ch = track.channels
     args = [exe, "-nostdin", "-hide_banner", "-v", "error", "-i", path, "-map", f"0:a:{track.pos}", "-vn", "-sn",
-            "-dn", "-ac", str(ch), "-ar", str(track.rate), "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"]
+            "-dn", "-ac", str(ch), "-ar", str(track.rate), *(["-t", f"{limit:.3f}"] if limit > 0 else []),
+            "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"]
     proc = ff.popen(args, stdout=subprocess.PIPE)
     err = _stderr_reader(proc)
     w = store.SourceWriter(folder, ch)
     frame_bytes = 4 * ch
-    want = max(1.0, (track.duration or 0) * track.rate)
+    dur = min(track.duration or limit, limit) if limit > 0 else (track.duration or 0)
+    want = max(1.0, dur * track.rate)
     rest = b""
     try:
         while True:
@@ -80,7 +84,7 @@ def decode(path: str, track: ff.Track, folder: str, progress: Progress | None = 
             rest = data[whole:]
             if whole:
                 w.append(np.frombuffer(data[:whole], np.float32).reshape(-1, ch))
-            progress(w.frames / want if track.duration else 0.0)
+            progress(w.frames / want if dur else 0.0)
         proc.wait()
     except BaseException:
         proc.kill()
@@ -108,6 +112,19 @@ def open_file(path: str, folder: str, track_pos: int = 0, progress: Progress | N
     d.set_initial(src)
     fmt, opts = format_of(path, track, info)
     d.save_format, d.save_opts = fmt, opts
+    return d
+
+
+def open_preview(path: str, folder: str, track_pos: int = 0, seconds: float = 30.0,
+                 info: ff.FileInfo | None = None) -> Document:
+    """A small document of the first seconds of a file (the batch window previews its effects on it)."""
+    info = info or ff.probe(path)
+    track = next((t for t in info.tracks if t.pos == track_pos), info.tracks[0])
+    src = decode(path, track, folder, None, seconds)
+    lay = ff.layout_for(track.channels, track.layout)
+    d = Document(rate=track.rate, channels=track.channels, folder=folder, labels=tuple(ff.labels(track.channels, lay)),
+                 layout=lay, name=os.path.basename(path), path=path, info=info, track=track)
+    d.set_initial(src)
     return d
 
 
@@ -243,6 +260,13 @@ def out_shape(fmt: str, channels: int, rate: int) -> tuple[int, int]:
 TAG_KEYS = ("title", "artist", "album", "album_artist", "date", "genre", "track", "comment", "composer")
 
 
+def part_path(path: str, fmt: str) -> str:
+    """The temporary file save() writes before it becomes `path`."""
+    folder = os.path.dirname(os.path.abspath(path)) or "."
+    stem, ext = os.path.splitext(os.path.basename(path))
+    return os.path.join(folder, f".{stem}.artcore-part{ext or FORMATS[fmt].ext}")
+
+
 def save(d: Document, path: str, fmt: str, option: str, progress: Progress | None = None,
          a: int = 0, b: int | None = None, tags: dict | None = None, markers: bool = True) -> None:
     """Write frames [a, b) of the document (all by default) to path, with its markers and regions in that range
@@ -255,9 +279,7 @@ def save(d: Document, path: str, fmt: str, option: str, progress: Progress | Non
         raise RuntimeError("ffmpeg not found")
     b = d.frames if b is None else b
     out_ch, out_rate = out_shape(fmt, d.channels, d.rate)
-    folder = os.path.dirname(os.path.abspath(path)) or "."
-    stem, ext = os.path.splitext(os.path.basename(path))
-    tmp = os.path.join(folder, f".{stem}.artcore-part{ext or FORMATS[fmt].ext}")
+    tmp = part_path(path, fmt)
     meta: list[str] = []
     src_tags = dict(tags if tags is not None else (getattr(d.info, "tags", None) or {}))
     for k in TAG_KEYS:

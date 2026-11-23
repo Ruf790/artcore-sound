@@ -130,6 +130,18 @@ class SourceWriter:
                 pass
 
     def finish(self) -> Source:
+        try:
+            return self._finish()
+        except BaseException:
+            self.abort()
+            for k in range(1, 16):
+                try:
+                    os.remove(f"{self.path}.p{k}")
+                except OSError:
+                    pass
+            raise
+
+    def _finish(self) -> Source:
         if len(self._tail):
             pk = _block_peaks(self._tail)
             self._pk.write(pk.tobytes())
@@ -207,11 +219,12 @@ def _mm(src: Source, s0: int, s1: int, level: int, out: list) -> None:
 class Session:
     """The working folder of this run: <root>\\s-<id>\\ with a lock file. Every document gets its own subfolder."""
 
-    def __init__(self, root: str):
+    def __init__(self, root: str, clean: bool = True):
         from PySide6.QtCore import QLockFile
         self.root = root
         os.makedirs(root, exist_ok=True)
-        clean_stale(root)
+        if clean:
+            clean_stale(root)
         self.path = os.path.join(root, "s-" + uuid.uuid4().hex[:10])
         os.makedirs(self.path)
         self._lock = QLockFile(os.path.join(self.path, "lock"))
