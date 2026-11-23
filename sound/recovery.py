@@ -59,7 +59,7 @@ def to_dict(d: Document, root: str) -> dict:
     tags = dict(getattr(d.info, "tags", None) or {})
     track = getattr(d.track, "pos", 0) if d.track is not None else 0
     return {"kind": KIND, "app_version": VERSION, "time": time.time(), "name": d.name, "path": d.path,
-            "track": track, "tags": tags, "save_format": d.save_format, "save_opts": dict(d.save_opts),
+            "track": track, "film": dict(d.film), "tags": tags, "save_format": d.save_format, "save_opts": dict(d.save_opts),
             "dirty": d.dirty, "frames": d.frames, "rate": d.rate, "channels": d.channels, "sources": sources,
             "history": hist, "pos": d.pos, "saved": saved, "sel": list(d.sel) if d.sel else None,
             "cursor": d.cursor, "view_start": d.view_start, "spp": d.spp}
@@ -204,6 +204,7 @@ def restore(e: Entry, session) -> Document:
     d.cursor = min(int(data.get("cursor") or 0), d.frames)
     d.view_start, d.spp = float(data.get("view_start") or 0), float(data.get("spp") or 0)
     d.save_format, d.save_opts = data.get("save_format") or "", dict(data.get("save_opts") or {})
+    d.film = dict(data.get("film") or {})
     if d.path and os.path.isfile(d.path):
         try:
             d.info = ff.probe(d.path)

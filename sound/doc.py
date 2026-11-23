@@ -146,6 +146,7 @@ class Document:
     track: object = None                         # ff.Track that was opened
     save_format: str = ""                        # the format Save writes without asking (export.FORMATS key)
     save_opts: dict = field(default_factory=dict)
+    film: dict = field(default_factory=dict)     # 2.0: the video it was opened from {"path", "track", "index", "fps"}
     sel: tuple | None = None                     # (start, end) frames, end exclusive
     cursor: int = 0
     view_start: float = 0.0                      # the first frame at the left edge of the wave view

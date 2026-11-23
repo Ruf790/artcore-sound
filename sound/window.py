@@ -21,6 +21,7 @@ from . import spectrogram as sgm
 from .doc import Document, fmt_time, parse_time
 from .errors import human as human_error
 from .i18n import fmt_bytes, t
+from .filmwin import FilmCommands
 from .player import Player, Volume
 from .volui import STEP_DB, VolumeControl
 from .waveview import Meters, Overview, WaveView
@@ -39,7 +40,7 @@ class Bridge(QObject):
     stats = Signal(object, object)              # key, analysis.Stats (the status bar's background measuring)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, FilmCommands):
     UPDATE_EVERY = 24 * 3600
 
     def __init__(self, cfg: dict, session):
@@ -53,6 +54,8 @@ class MainWindow(QMainWindow):
         self._vol_save.setSingleShot(True)
         self._vol_save.setInterval(700)
         self._vol_save.timeout.connect(self._save_volume)
+        self.video_win = None                   # 2.0: the video window (videoui.py)
+        self.last_video_out = ""
         self.bridge = Bridge()
         self.bridge.progress.connect(self._on_progress)
         self.bridge.done.connect(self._on_job_done)
@@ -233,6 +236,7 @@ class MainWindow(QMainWindow):
         self.a_save_as = A(m, "fa6s.file-export", t("save_as") + "…", self.save_as, "Ctrl+Shift+S")
         self.a_save_sel = A(m, "fa6s.scissors", t("save_sel") + "…", lambda: self.save_as(selection=True))
         self.a_save_regions = A(m, "fa6s.layer-group", t("mk_save_regions") + "…", self.save_regions_dialog)
+        self.a_return_video = A(m, "fa6s.film", t("rv_title") + "…", self.return_to_video_dialog, "Ctrl+Shift+E")
         m.addSeparator()
         self.a_show = A(m, "fa6s.folder", t("show_file"), self._show_file)
         m.addSeparator()
@@ -1972,7 +1976,8 @@ class MainWindow(QMainWindow):
                       (self.a_cut, sel), (self.a_copy, sel), (self.a_delete, sel), (self.a_trim, sel),
                       (self.a_silence, sel), (self.a_paste, has and self.clip is not None),
                       (self.a_paste_new, self.clip is not None), (self.a_ins_sil, has), (self.a_sel_all, has),
-                      (self.a_zoom_sel, sel), (self.a_play, has), (self.a_play_all, has)):
+                      (self.a_zoom_sel, sel), (self.a_play, has), (self.a_play_all, has),
+                      (self.a_return_video, has)):
             a.setEnabled(on and not (busy and a not in (self.a_copy, self.a_close_all)))
         for a in self.proc_actions:
             a.setEnabled(has and not busy)

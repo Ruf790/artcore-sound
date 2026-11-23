@@ -155,6 +155,8 @@ class FileInfo:
     has_video: bool = False
     tags: dict = field(default_factory=dict)
     chapters: list = field(default_factory=list)     # (start s, end s, title)
+    streams: list = field(default_factory=list)      # (index, kind, codec) of every stream (2.0)
+    fps: float = 0.0                                 # the video's frame rate (2.0; 0 = no video)
 
 
 def _bits(s: dict) -> int:
@@ -201,7 +203,10 @@ def probe(path: str) -> FileInfo:
     pos = 0
     for s in js.get("streams", []):
         kind = s.get("codec_type")
+        info.streams.append((int(s.get("index", 0)), kind or "", s.get("codec_name", "") or ""))
         if kind == "video" and not (s.get("disposition") or {}).get("attached_pic"):
+            if not info.has_video:
+                info.fps = parse_rate(s.get("avg_frame_rate") or s.get("r_frame_rate") or "")
             info.has_video = True
         if kind != "audio":
             continue
@@ -228,6 +233,16 @@ def probe(path: str) -> FileInfo:
     if not info.tracks:
         raise ValueError("no audio")
     return info
+
+
+def parse_rate(s: str) -> float:
+    """«24000/1001» → 23.976…; 0 when unknown."""
+    try:
+        n, _, d = str(s).partition("/")
+        v = float(n) / float(d or 1)
+        return v if 1.0 <= v <= 1000.0 else 0.0
+    except (ValueError, ZeroDivisionError):
+        return 0.0
 
 
 def parse_hms(s: str) -> float:

@@ -156,6 +156,8 @@ def open_file(path: str, folder: str, track_pos: int = 0, progress: Progress | N
                  layout=lay, name=os.path.basename(path), path=path, info=info, track=track)
     d.markers = read_markers(path, info, track, src.frames)
     d.set_initial(src)
+    if info.has_video:                 # 2.0: File → Return to video, the video window, frames as a unit
+        d.film = {"path": os.path.abspath(path), "track": track.pos, "index": track.index, "fps": info.fps}
     fmt, opts = format_of(path, track, info)
     d.save_format, d.save_opts = fmt, opts
     return d
