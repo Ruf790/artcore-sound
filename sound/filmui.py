@@ -67,6 +67,17 @@ class ReturnDialog(QDialog):
         form.addRow(t("rv_track_title"), self.title)
         self.default = QCheckBox(t("rv_default"))
         form.addRow("", self.default)
+        sr = QHBoxLayout()
+        self.stereo = QCheckBox(t("rv_stereo"))
+        self.stereo_how = QComboBox()
+        for k in ("itu", "loro", "pl2"):
+            self.stereo_how.addItem(t("mx_" + k), k)
+        self.stereo_how.setCurrentIndex(max(0, self.stereo_how.findData(self.cfg.get("stereo_how", "itu"))))
+        self.stereo.setChecked(bool(self.cfg.get("stereo", False)) and d.channels > 2)
+        self.stereo.setEnabled(d.channels > 2)
+        sr.addWidget(self.stereo)
+        sr.addWidget(self.stereo_how, 1)
+        form.addRow("", sr)
         dr = QHBoxLayout()
         self.delay = QDoubleSpinBox()
         self.delay.setRange(-60000, 60000)
@@ -105,6 +116,7 @@ class ReturnDialog(QDialog):
         self.track.currentIndexChanged.connect(lambda _i: self._track_changed())
         self.delay.valueChanged.connect(lambda _v: self._sync())
         self.overwrite.toggled.connect(lambda _on: self._sync())
+        self.stereo.toggled.connect(lambda _on: self._sync())
         self._set_film(d.film.get("path") or "")
 
     # ── the film ──────────────────────────────────────────────
@@ -201,6 +213,11 @@ class ReturnDialog(QDialog):
             notes.append(t("rv_note_channels", c.name, self.d.channels, ch))
         if rate != self.d.rate:
             notes.append(t("rv_note_rate", c.name, rate))
+        self.stereo_how.setEnabled(self.stereo.isChecked() and self.stereo.isEnabled())
+        if self.stereo.isChecked() and self.d.channels > 2:
+            q = self.quality.currentData() or c.default
+            q = q if c.lossless else film.STEREO_OPTION.get(k, q)
+            notes.append(t("rv_note_stereo", c.name, t("rv_bits", q) if c.lossless else f"{q} kbit/s"))
         if c.experimental:
             notes.append(t("rv_note_dts"))
         if self.overwrite.isChecked():
@@ -219,13 +236,21 @@ class ReturnDialog(QDialog):
                             replace_index=int(self.track.currentData() if self.track.count() else -1), codec=k,
                             option=self.quality.currentData() or "", lang=(lang or "")[:3].lower(),
                             title=self.title.text().strip(), default=self.default.isChecked(),
-                            delay_ms=self.delay.value(), chapters=self.chapters.currentData(), out_path=out)
+                            delay_ms=self.delay.value(), chapters=self.chapters.currentData(), out_path=out,
+                            stereo=(self.stereo_how.currentData() or "itu")
+                            if self.stereo.isChecked() and self.d.channels > 2 else "",
+                            stereo_title=self._stereo_title())
+
+    def _stereo_title(self) -> str:
+        base = self.title.text().strip()
+        return f"{base} ({t('rv_stereo_suffix')})" if base else t("rv_stereo_suffix")
 
     def remember(self) -> None:
         o = self.options()
         q = dict(self.cfg.get("quality") or {})
         q[o.codec] = o.option
-        self.cfg.update(mode=o.mode, codec=o.codec, quality=q, chapters=o.chapters,
+        self.cfg.update(mode=o.mode, codec=o.codec, quality=q, chapters=o.chapters, stereo=self.stereo.isChecked(),
+                        stereo_how=self.stereo_how.currentData(),
                         dir=os.path.dirname(self.film.text()))
 
     def film_path(self) -> str:

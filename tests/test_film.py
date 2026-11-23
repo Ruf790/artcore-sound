@@ -156,6 +156,159 @@ def test_return_dialog(qapp, session, data_dir, films):
     assert o.mode == "add" and o.codec == "aac" and o.out_path.endswith("Фильм (ArtCore).mkv") and o.delay_ms == 1001
     dlg.overwrite.setChecked(True)
     assert dlg.options().out_path == mkv
+    assert dlg.stereo.isEnabled() and not dlg.options().stereo
+    dlg.stereo.setChecked(True)
+    dlg.stereo_how.setCurrentIndex(dlg.stereo_how.findData("pl2"))
+    dlg.title.setText("Дубляж")
+    o = dlg.options()
+    assert o.stereo == "pl2" and o.stereo_title.startswith("Дубляж (") and "192" in dlg.note.text()
     dlg.remember()
-    assert cfg["return_video"]["codec"] == "aac"
+    assert cfg["return_video"]["codec"] == "aac" and cfg["return_video"]["stereo_how"] == "pl2"
     dlg.reject()
+    st = media.open_file(mkv, session.folder(), 1)                     # a stereo document: nothing to add
+    dlg = ReturnDialog(st, cfg)
+    assert not dlg.stereo.isEnabled() and not dlg.options().stereo
+    dlg.reject()
+
+
+# ── every channel in its place (2.0, block 2) ─────────────────
+TONES = {"5.1(side)": (310, 530, 730, 60, 1110, 1330), "7.1": (310, 530, 730, 60, 950, 1170, 1390, 1610)}
+NAMES = {"5.1(side)": ("FL", "FR", "FC", "LFE", "SL", "SR"),
+         "7.1": ("FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR")}
+
+
+def _tones_doc(session, d, layout):
+    path = os.path.join(d, f"tones_{layout}.wav")
+    if not os.path.exists(path):
+        args = []
+        for f in TONES[layout]:
+            args += ["-f", "lavfi", "-i", f"sine=f={f}:d=3:r=48000"]
+        n = len(TONES[layout])
+        mp = "|".join(f"{i}.0-{c}" for i, c in enumerate(NAMES[layout]))
+        _ff(*args, "-filter_complex", "".join(f"[{i}]" for i in range(n)) +
+            f"join=inputs={n}:channel_layout={layout}:map={mp}[a]", "-map", "[a]", "-c:a", "pcm_f32le", path)
+    return media.open_file(path, session.folder(), 0)
+
+
+def _dominant(x, rate):
+    seg = x[rate // 2: rate // 2 + rate] * np.hanning(rate)[:, None]
+    return [int(np.argmax(np.abs(np.fft.rfft(seg[:, c])))) for c in range(x.shape[1])]
+
+
+def _check_places(e, freqs):
+    got = _dominant(e.read(0, e.frames), e.rate)
+    assert got == list(freqs), (e.labels, got)
+
+
+@pytest.mark.parametrize("ext", [".mkv", ".mp4"])
+@pytest.mark.parametrize("codec", film.ORDER)
+def test_every_channel_in_its_place(films, session, codec, ext, tmp_path):
+    """A different tone in each channel → Return to video → each tone in its own channel, the layout checked."""
+    if codec == "dts" and not film.dts_available():
+        pytest.skip("no DTS encoder")
+    dd, mkv, mp4 = films
+    if codec not in film.codecs_for("film" + ext):
+        pytest.skip("not in this container")
+    d = _tones_doc(session, dd, "5.1(side)")
+    assert _dominant(d.read(0, d.frames), d.rate) == list(TONES["5.1(side)"])
+    src = mkv if ext == ".mkv" else mp4
+    d.film = {"path": src, "track": 0, "index": 1, "fps": 24}
+    out = str(tmp_path / f"places_{codec}{ext}")
+    res = film.return_to_video(d, film.Options(replace_index=1, codec=codec, out_path=out))
+    assert res.channels == 6
+    a = [s for s in _probe(out)["streams"] if s["codec_type"] == "audio"][0]
+    assert film.layout_ok(a.get("channel_layout", ""), 6, "5.1(side)")
+    e = media.open_file(out, session.folder(), 0)
+    assert e.labels == ("L", "R", "C", "LFE", "Ls", "Rs")
+    _check_places(e, TONES["5.1(side)"])
+
+
+@pytest.mark.parametrize("codec", [k for k in film.ORDER if film.CODECS[k].max_channels >= 8])
+def test_seven_one_in_its_place(films, session, codec, tmp_path):
+    dd, mkv, _mp4 = films
+    d = _tones_doc(session, dd, "7.1")
+    d.film = {"path": mkv, "track": 0, "index": 1, "fps": 24}
+    out = str(tmp_path / f"places71_{codec}.mkv")
+    film.return_to_video(d, film.Options(replace_index=1, codec=codec, out_path=out))
+    e = media.open_file(out, session.folder(), 0)
+    assert e.channels == 8
+    _check_places(e, TONES["7.1"])
+
+
+def test_layout_check():
+    assert film.layout_ok("5.1", 6, "5.1(side)") and film.layout_ok("5.1(side)", 6, "5.1")
+    assert film.layout_ok("", 6, "5.1(side)") and film.layout_ok("unknown", 2, "stereo")
+    assert not film.layout_ok("6.0", 6, "5.1") and not film.layout_ok("6 channels", 6, "5.1")
+    assert not film.layout_ok("hexagonal", 6, "5.1") and not film.layout_ok("7.1(wide)", 8, "7.1")
+
+
+def test_verify_refuses_a_wrong_layout(films, session, tmp_path):
+    dd, mkv, _mp4 = films
+    bad = str(tmp_path / "hex.mkv")
+    _ff("-i", mkv, "-map", "0:v", "-map", "0:a:0", "-c:v", "copy", "-af", "aformat=channel_layouts=6.0",
+        "-c:a", "flac", bad)
+    with pytest.raises(RuntimeError, match="layout"):
+        film.verify(bad, {"video": 1, "audio": 1, "subtitle": 0, "attachment": 0}, 0, "flac", 6, 3.0, "5.1")
+
+
+@pytest.mark.parametrize("kind", ["itu", "pl2"])
+def test_stereo_track_added(films, session, kind, tmp_path):
+    """«Add a stereo track»: after the 5.1 one, its own codec settings, not default; the front tones in their sides,
+    the centre in both, the 5.1 track untouched."""
+    dd, mkv, _mp4 = films
+    d = _tones_doc(session, dd, "5.1(side)")
+    d.film = {"path": mkv, "track": 0, "index": 1, "fps": 24}
+    out = str(tmp_path / f"stereo_{kind}.mkv")
+    res = film.return_to_video(d, film.Options(replace_index=1, codec="ac3", lang="rus", title="Дубляж", out_path=out,
+                                               stereo=kind, stereo_title="Дубляж (стерео)"))
+    assert res.track == 0 and res.stereo_track == 1
+    assert res.streams == {"video": 1, "audio": 3, "subtitle": 1, "attachment": 0}
+    a = [s for s in _probe(out)["streams"] if s["codec_type"] == "audio"]
+    assert [int(s["channels"]) for s in a] == [6, 2, 2]
+    assert a[1]["tags"]["title"] == "Дубляж (стерео)" and a[1]["tags"]["language"] == "rus"
+    assert a[0]["disposition"]["default"] == 1 and a[1]["disposition"]["default"] == 0
+    assert int(a[1]["bit_rate"]) == 256000
+    _check_places(media.open_file(out, session.folder(), 0), TONES["5.1(side)"])
+    st = media.open_file(out, session.folder(), 1)
+    x = st.read(0, st.frames)
+    seg = x[24000:72000] * np.hanning(48000)[:, None]
+    spec = np.abs(np.fft.rfft(seg, axis=0))
+    lvl = lambda f, c: spec[f - 2:f + 3, c].max()                         # noqa: E731
+    fl, fr, fc, _lfe, sl, sr = TONES["5.1(side)"]
+    assert lvl(fl, 0) > 30 * lvl(fl, 1) and lvl(fr, 1) > 30 * lvl(fr, 0)
+    assert 0.8 < lvl(fc, 0) / lvl(fc, 1) < 1.25
+    if kind == "itu":
+        assert lvl(sl, 0) > 30 * lvl(sl, 1) and lvl(sr, 1) > 30 * lvl(sr, 0)
+    else:                                                             # Lt/Rt: both surrounds in both sides
+        assert lvl(sl, 1) > 0.3 * lvl(sl, 0) and lvl(sr, 0) > 0.3 * lvl(sr, 1)
+    assert abs(st.frames - d.frames) < 0.02 * d.rate
+    # the downmix lines up with the picture: the front left tone starts where it does in the 5.1 track
+    m = media.open_file(out, session.folder(), 0).read(0, 4800)[:, 0]
+    s0 = x[:4800, 0]
+    lag = int(np.argmax(np.correlate(s0, m, "full"))) - (len(m) - 1)
+    assert abs(lag) <= 2
+
+
+def test_stereo_plan_only_for_multichannel():
+    info = ff.FileInfo(path="x.mkv", streams=[(0, "video", "h264"), (1, "audio", "ac3")])
+    args, pos, exp = film.plan(info, 2, 48000, "stereo", film.Options(replace_index=1, stereo="itu"))
+    assert exp["audio"] == 1 and "-filter_complex" not in args
+    args, pos, exp = film.plan(info, 8, 48000, "7.1", film.Options(mode="add", codec="ac3", stereo="loro"))
+    assert pos == 1 and exp["audio"] == 3
+    fc = args[args.index("-filter_complex") + 1]
+    assert "aresample=ochl=5.1" in fc and "c0=c8|c1=c9[st]" in fc and args[args.index("-ch_layout") + 1] == "10c"
+
+
+@pytest.mark.parametrize("codec", ["ac3", "eac3", "dts"])
+def test_seven_one_folded_to_five_one(films, session, codec, tmp_path):
+    """AC-3, E-AC-3 and DTS take 5.1 at most: 7.1 is folded down, the front channels and the LFE stay in place."""
+    if codec == "dts" and not film.dts_available():
+        pytest.skip("no DTS encoder")
+    dd, mkv, _mp4 = films
+    d = _tones_doc(session, dd, "7.1")
+    d.film = {"path": mkv, "track": 0, "index": 1, "fps": 24}
+    out = str(tmp_path / f"fold_{codec}.mkv")
+    res = film.return_to_video(d, film.Options(replace_index=1, codec=codec, out_path=out))
+    assert res.channels == 6
+    e = media.open_file(out, session.folder(), 0)
+    assert _dominant(e.read(0, e.frames), e.rate)[:4] == list(TONES["7.1"][:4])
