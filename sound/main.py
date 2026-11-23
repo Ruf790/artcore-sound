@@ -433,8 +433,9 @@ def _selftest_20(src, session, tmp: str, lines: list) -> None:
 
     import numpy as np
 
-    from . import record
+    from . import media, record
     from .player import InputMonitor, Player, Volume
+    src = media.open_file(src, session.folder()) if isinstance(src, str) else src
 
     def capture(vol):
         blocks = []
