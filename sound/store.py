@@ -21,6 +21,9 @@ MIN_BLOCKS = 4             # the last level has at least this many blocks
 CHUNK = 1 << 16            # frames per read / write step (64 K frames: 1.5 MB for 5.1 float)
 
 
+READ_DIRECT = 256 << 10      # reads of at least this many bytes go through the file, not the mapping
+
+
 class Source:
     """A finished, read-only raw float32 file + its peak levels. kind "zero" = silence (no file)."""
 
@@ -33,6 +36,9 @@ class Source:
         if kind == "data" and self.frames:
             self.data = np.memmap(path, dtype=np.float32, mode="r", shape=(self.frames, self.channels))
         self.levels = levels or []          # [np.ndarray (blocks, channels, 2)] for BASE, BASE*4 …
+        self._local = threading.local()     # a file handle per thread for the big reads
+        self._handles: list = []
+        self._hlock = threading.Lock()
 
     @classmethod
     def zero(cls, channels: int) -> "Source":
@@ -47,9 +53,34 @@ class Source:
             out = np.empty((n, self.channels), np.float32)
         if self.kind == "zero" or self.data is None:           # silence, or a source already deleted
             out[:n] = 0
+        elif n * self.channels * 4 >= READ_DIRECT and out[:n].flags.c_contiguous and self._read_file(start, out[:n]):
+            pass
         else:
             out[:n] = self.data[start:start + n]
         return out
+
+    def _read_file(self, start: int, dst: np.ndarray) -> bool:
+        """A big run of frames by plain file reading (1.0). Through the mapping, Windows brings the file in a page
+        fault at a time with little read-ahead — 4–5× slower than reading it, which goes through the system's
+        cache with full read-ahead; the small reads of drawing stay on the mapping."""
+        f = getattr(self._local, "f", None)
+        try:
+            if f is None:
+                f = open(self.path, "rb", buffering=0)
+                with self._hlock:
+                    self._handles.append(f)
+                self._local.f = f
+            f.seek(start * self.channels * 4)
+            view = memoryview(dst).cast("B")
+            got = 0
+            while got < len(view):
+                k = f.readinto(view[got:])
+                if not k:
+                    return False
+                got += k
+            return True
+        except (OSError, ValueError):
+            return False
 
     def size_bytes(self) -> int:
         n = self.frames * self.channels * 4 if self.kind == "data" else 0
@@ -58,6 +89,13 @@ class Source:
     def close(self):
         self.data = None
         self.levels = []
+        with self._hlock:
+            for f in self._handles:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+            self._handles = []
 
 
 def delete_source(src: Source) -> bool:
