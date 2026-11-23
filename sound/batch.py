@@ -485,15 +485,10 @@ def _drop_history(d) -> None:
     old = [s for s in d.sources() if id(s) not in keep]
     d.history = [d.history[d.pos]]
     d.pos = 0
+    d.orphans = []
+    from .store import delete_source
     for s in old:
-        path = s.path
-        s.close()
-        if path:
-            for p in [path] + [f"{path}.p{k}" for k in range(16)]:
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+        delete_source(s)
 
 
 def apply_step(d, step: Step, progress, notes: list | None = None, profiles: dict | None = None) -> None:
@@ -663,8 +658,10 @@ def _worker_main(tq, rq, cancel_ev, pause_ev, work_root: str, env: dict) -> None
     """A worker process: takes (task, job) from tq until None, puts ("hello" | "prog" | "done", …) to rq."""
     os.environ.update(env)
     from . import store
+    from .fx import base as fxbase
     from .i18n import set_lang
     set_lang(env.get("ARTCORE_SOUND_LANG", "ru"))
+    fxbase.FFT_WORKERS = 1                     # the files run in parallel already
     try:
         sess = store.Session(work_root, clean=False)
     except Exception as e:                                       # noqa: BLE001

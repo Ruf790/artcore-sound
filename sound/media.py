@@ -54,6 +54,59 @@ def ch_layout_args(channels: int, layout: str) -> list[str]:
     return ["-ch_layout", lay or f"{channels}c"]
 
 
+def _read_full(stream, buf: memoryview) -> int:
+    """Fill buf from the stream (a pipe gives 64 KB at a time); fewer bytes only at its end."""
+    got = 0
+    while got < len(buf):
+        n = stream.readinto(buf[got:])
+        if not n:
+            break
+        got += n
+    return got
+
+
+def pipe_frames(stream, ch: int, size: int = store.CHUNK, ahead: int = 3):
+    """The float32 frames of a pipe as (≤ size, ch) arrays, whole chunks only (the last one shorter). A thread
+    reads ahead (up to `ahead` chunks), so ffmpeg keeps decoding while the peaks are made and the chunk is
+    written — the two run side by side instead of in turns."""
+    import queue as _q
+    fb = 4 * ch
+    q: _q.Queue = _q.Queue(ahead)
+    stop = threading.Event()
+
+    def reader():
+        try:
+            while not stop.is_set():
+                buf = bytearray(size * fb)                 # a new buffer each time: the array keeps it
+                n = _read_full(stream, memoryview(buf))
+                whole = n // fb * fb                       # a pipe that ends mid-frame drops the broken frame
+                if whole:
+                    q.put(np.frombuffer(buf, np.float32, count=whole // 4).reshape(-1, ch))
+                if n < len(buf):
+                    break
+        except (OSError, ValueError) as e:              # the pipe closed under us (a kill on Cancel)
+            q.put(e)
+        finally:
+            q.put(None)
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    try:
+        while True:
+            x = q.get()
+            if x is None:
+                break
+            if isinstance(x, Exception):
+                raise x
+            yield x
+    finally:
+        stop.set()
+        while th.is_alive():                            # let the reader see stop (or the end) and leave
+            try:
+                q.get(timeout=0.05)
+            except _q.Empty:
+                pass
+
+
 # ── opening ───────────────────────────────────────────────────
 def decode(path: str, track: ff.Track, folder: str, progress: Progress | None = None,
            limit: float = 0.0) -> store.Source:
@@ -73,17 +126,10 @@ def decode(path: str, track: ff.Track, folder: str, progress: Progress | None = 
     frame_bytes = 4 * ch
     dur = min(track.duration or limit, limit) if limit > 0 else (track.duration or 0)
     want = max(1.0, dur * track.rate)
-    rest = b""
+    del frame_bytes
     try:
-        while True:
-            data = proc.stdout.read(store.CHUNK * frame_bytes)
-            if not data:
-                break
-            data = rest + data
-            whole = len(data) // frame_bytes * frame_bytes
-            rest = data[whole:]
-            if whole:
-                w.append(np.frombuffer(data[:whole], np.float32).reshape(-1, ch))
+        for x in pipe_frames(proc.stdout, ch):
+            w.append(x)
             progress(w.frames / want if dur else 0.0)
         proc.wait()
     except BaseException:

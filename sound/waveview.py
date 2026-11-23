@@ -405,15 +405,17 @@ class WaveView(QWidget):
             p.setPen(QPen(center, 1))
             p.drawLine(QLineF(0, mid, end_x, mid))
         if spp >= 1:
-            ncols = int(math.ceil(w))
-            mm = d.minmax(start, spp, ncols)
-            p.setPen(QPen(wave, 1))
+            # a column per device pixel (125 / 150 %: more detail, not a stretched picture), drawn as an image made
+            # by numpy — no Python object per column, so even 5.1 at full width is a millisecond or two
+            k = dpr if spp / dpr >= 1 else 1.0
+            ncols = int(math.ceil(w * k))
+            mm = d.minmax(start, spp / k, ncols)
+            argb = np.uint32(wave.rgba() | 0xFF000000)
             for c, (top, lh) in enumerate(geo):
-                mid, half = top + lh / 2, lh / 2 - 1
                 lo = np.clip(mm[:, c, 0], -1.0, 1.0)
                 hi = np.clip(mm[:, c, 1], -1.0, 1.0)
                 ok = np.flatnonzero(~np.isnan(lo))
-                if spp < 64 and len(ok) > 1:       # few samples a column: join each column to the one before
+                if spp / k < 64 and len(ok) > 1:   # few samples a column: join each column to the one before
                     lo2, hi2 = lo.copy(), hi.copy()
                     prev_lo, prev_hi = np.roll(lo, 1), np.roll(hi, 1)
                     good = ~np.isnan(prev_lo)
@@ -421,11 +423,8 @@ class WaveView(QWidget):
                     lo2[good] = np.minimum(lo[good], prev_hi[good])
                     hi2[good] = np.maximum(hi[good], prev_lo[good])
                     lo, hi = lo2, hi2
-                y1 = mid - hi * half
-                y2 = mid - lo * half
-                lines = [QLineF(x + 0.5, y1[x], x + 0.5, max(y2[x], y1[x] + 1)) for x in ok]
-                p.drawLines(lines)
-                self._paint_clips(p, mm[:, c], ok, top, lh)
+                p.drawImage(QRectF(0, top, ncols / k, lh), self._columns_image(lo, hi, lh * k, argb))
+                self._paint_clips(p, mm[:, c], ok, top, lh, k)
         else:
             a = int(math.floor(start))
             k = int(math.ceil(w * spp)) + 2
@@ -449,14 +448,33 @@ class WaveView(QWidget):
         p.end()
         return pm
 
-    def _paint_clips(self, p: QPainter, mm: np.ndarray, ok, top: float, lh: float) -> None:
+    @staticmethod
+    def _columns_image(lo: np.ndarray, hi: np.ndarray, height: float, argb) -> QImage:
+        """The min / max of every column as a vertical bar (at least a pixel), transparent around: (ncols × height)
+        ARGB32. NaN (past the end) leaves a column empty."""
+        h = max(1, int(round(height)))
+        mid, half = h / 2.0, h / 2.0 - 1.0
+        with np.errstate(invalid="ignore"):
+            y1 = np.floor(mid - hi * half)
+            y2 = np.ceil(mid - lo * half)
+        bad = np.isnan(y1) | np.isnan(y2)
+        y1 = np.where(bad, 0, y1).astype(np.int32)
+        y2 = np.where(bad, 0, np.maximum(y2, y1 + 1)).astype(np.int32)
+        y2[bad] = 0
+        rows = np.arange(h, dtype=np.int32)[:, None]
+        mask = (rows >= y1[None, :]) & (rows < y2[None, :])
+        buf = np.ascontiguousarray(np.where(mask, argb, np.uint32(0)).astype(np.uint32))
+        img = QImage(buf.data, buf.shape[1], h, buf.shape[1] * 4, QImage.Format_ARGB32_Premultiplied)
+        return img.copy()                              # own the pixels (buf goes away)
+
+    def _paint_clips(self, p: QPainter, mm: np.ndarray, ok, top: float, lh: float, k: float = 1.0) -> None:
         """Red marks at the top / bottom edge where the sound reaches full scale."""
         hot = ok[(mm[ok, 1] >= 0.9999) | (mm[ok, 0] <= -0.9999)]
         if len(hot):
             p.save()
             p.setPen(QPen(style.qcolor(style.W_CLIP), 1))
-            p.drawLines([QLineF(x + 0.5, top, x + 0.5, top + 3) for x in hot] +
-                        [QLineF(x + 0.5, top + lh - 3, x + 0.5, top + lh) for x in hot])
+            xs = (hot + 0.5) / k
+            p.drawLines([QLineF(x, top, x, top + 3) for x in xs] + [QLineF(x, top + lh - 3, x, top + lh) for x in xs])
             p.restore()
 
     def _paint_ruler(self, p: QPainter) -> None:

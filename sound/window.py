@@ -834,7 +834,21 @@ class MainWindow(QMainWindow):
         self.stop_play()
         return d
 
+    def collect_garbage(self) -> int:
+        """Delete the working files of the sources only a discarded redo branch used — once neither the clipboard
+        nor another document (a paste) holds them. A long film's effect undone and replaced frees its gigabytes at
+        once instead of at the exit. → how many sources were deleted."""
+        if not any(d.orphans for d in self.docs):
+            return 0
+        live = set()
+        for d in self.docs:
+            live |= {id(s) for s in d.sources()}
+        if self.clip is not None:
+            live |= {id(s) for s, _o, _n in self.clip.pieces}
+        return sum(d.free_orphans(live) for d in self.docs)
+
     def _edited(self) -> None:
+        self.collect_garbage()
         d = self.doc
         if d is not None:
             self.meters.set_channels(d.labels)            # undo of a channel change changes the meters too

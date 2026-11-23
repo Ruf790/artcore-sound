@@ -94,6 +94,12 @@ class Compressor(Effect):
 # ── the limiter ───────────────────────────────────────────────
 _phases = [_tp_filter[p::OVERSAMPLE] for p in range(OVERSAMPLE)]
 TP_DELAY = (len(_tp_filter) - 1) // 2 // OVERSAMPLE      # 6: phase p of input t is the time t + p/4 − 6
+TP_TAPS = max(len(h) for h in _phases)
+# the phases as one matrix: column p, row k = tap k of phase p (reversed: row 0 is the oldest input)
+_TP_MATRIX = np.zeros((TP_TAPS, OVERSAMPLE))
+for _p, _h in enumerate(_phases):
+    _TP_MATRIX[TP_TAPS - len(_h):, _p] = _h[::-1]
+_TP_MATRIX_T = np.ascontiguousarray(_TP_MATRIX.T)
 
 
 class LimiterProc(Processor):
@@ -111,30 +117,44 @@ class LimiterProc(Processor):
             self.held = History(L - 1, 1)
             self.hold = np.zeros(1)
             self.xdelay = Fifo(L - 1 + (TP_DELAY if tp else 0), self.ch)
-            self.tp_zi = [np.zeros((len(h) - 1, self.ch)) for h in _phases] if tp else None
-            self.tp_prev = np.zeros(self.ch)
+            self.tp_hist = np.zeros((TP_TAPS - 1, self.ch)) if tp else None   # the inputs before this block
+            self.tp_prev = 0.0
             self.tp_x = Fifo(TP_DELAY, self.ch) if tp else None
             self.latency = L - 1 + (TP_DELAY if tp else 0)
 
     def _level(self, x):
-        """|x| per frame, or with true peak the largest of the oversampled points around each frame — those of
-        frame t − TP_DELAY, as the input lags by that much on this path."""
+        """The level of every frame over all channels, (n, 1): |x|, or with true peak the largest of the
+        oversampled points around each frame — those of frame t − TP_DELAY, as the input lags by that much on this
+        path. The four phases of the oversampling filter are one matrix product over a sliding window of the input
+        (BLAS), not four filters a channel."""
         if not self.tp:
-            return np.abs(x)
-        ys = []
-        for i, h in enumerate(_phases):
-            y, self.tp_zi[i] = signal.lfilter(h, [1.0], x, axis=0, zi=self.tp_zi[i])
-            ys.append(np.abs(y))
-        now = np.max(ys, axis=0)                               # the times τ … τ + ¾ (τ = t − TP_DELAY)
-        late = np.max(ys[1:], axis=0)                          # those of input t − 1: τ − ¾ … τ − ¼
-        before = np.concatenate((self.tp_prev[None], late[:-1]))
-        self.tp_prev = late[-1].copy()
-        xd = np.abs(self.tp_x(x))
-        return np.maximum(xd, np.maximum(now, before))
+            return np.abs(x).max(axis=1, keepdims=True)
+        n = len(x)
+        ext = np.concatenate((self.tp_hist, x))
+        self.tp_hist = ext[len(ext) - (TP_TAPS - 1):].copy()
+        now = late = None
+        for c in range(self.ch):
+            col = np.ascontiguousarray(ext[:, c])
+            win = np.lib.stride_tricks.sliding_window_view(col, TP_TAPS)          # (n, taps), no copy
+            y = _TP_MATRIX_T @ win.T                                               # (phases, n), rows contiguous
+            np.abs(y, out=y)
+            lt = np.maximum(np.maximum(y[1], y[2]), y[3])      # those of input t − 1: τ − ¾ … τ − ¼
+            nw = np.maximum(lt, y[0])                          # the times τ … τ + ¾ (τ = t − TP_DELAY)
+            if now is None:
+                now, late = nw, lt
+            else:
+                np.maximum(now, nw, out=now)
+                np.maximum(late, lt, out=late)
+        before = np.empty(n)
+        before[0] = self.tp_prev
+        before[1:] = late[:-1]
+        self.tp_prev = float(late[-1]) if n else self.tp_prev
+        xd = np.abs(self.tp_x(x)).max(axis=1)
+        return np.maximum(xd, np.maximum(now, before))[:, None]
 
     def _process(self, x):
         x = x * self.drive
-        lvl = self._level(x).max(axis=1, keepdims=True)
+        lvl = self._level(x)
         need = np.maximum(db(lvl) - self.ceil_db, 0.0)
         L = self.L                                                                # noqa: N806
         cat = self.req.join(need)

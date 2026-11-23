@@ -169,7 +169,8 @@ class Document:
         self.markers: tuple = ()                  # Marker, sorted by time
         self.mversion = 0                         # changes with every change of the markers
         self.saved_id = 0
-        self.zero = Source.zero(self.channels)
+        self.orphans: list = []                   # sources only the discarded redo branch used (the window deletes
+        self.zero = Source.zero(self.channels)    # them once no clipboard or other document holds them either)
         if not self.labels:
             from .ff import labels as _labels
             self.labels = tuple(_labels(self.channels, self.layout))
@@ -315,7 +316,14 @@ class Document:
     def _push(self, label: str, sel_before=None, cursor_before: int = 0) -> None:
         st = State(self.pieces, label, self.rate, self.channels, tuple(self.labels), self.layout, self.sel,
                    self.cursor, next(_state_ids), sel_before, cursor_before, self.markers)
+        dropped = self.history[self.pos + 1:]
         del self.history[self.pos + 1:]
+        if dropped:                                # the redo branch is gone: its own sources may be deleted
+            keep = {id(src) for h in self.history for src, _o, _n in h.pieces} | {id(src) for src, _o, _n in st.pieces}
+            for h in dropped:
+                for src, _o, _n in h.pieces:
+                    if src.kind == "data" and id(src) not in keep and all(src is not x for x in self.orphans):
+                        self.orphans.append(src)
         self.history.append(st)
         self.pos = len(self.history) - 1
 
@@ -577,6 +585,19 @@ class Document:
             for src, _o, _n in st.pieces:
                 out.add(src)
         return out
+
+    def free_orphans(self, live: set | None = None) -> int:
+        """Delete the working files of the orphans (see _push) that no source in `live` (ids: the clipboard, the
+        other documents) and no state of this history uses. → how many were deleted."""
+        live = set(live or ()) | {id(s) for s in self.sources()}
+        keep, n = [], 0
+        for s in self.orphans:
+            if id(s) in live:
+                keep.append(s)
+            elif store.delete_source(s):
+                n += 1
+        self.orphans = keep
+        return n
 
     def disk_bytes(self) -> int:
         return sum(s.size_bytes() for s in self.sources())

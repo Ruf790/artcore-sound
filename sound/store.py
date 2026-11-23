@@ -45,7 +45,7 @@ class Source:
     def read(self, start: int, n: int, out: np.ndarray | None = None) -> np.ndarray:
         if out is None:
             out = np.empty((n, self.channels), np.float32)
-        if self.kind == "zero":
+        if self.kind == "zero" or self.data is None:           # silence, or a source already deleted
             out[:n] = 0
         else:
             out[:n] = self.data[start:start + n]
@@ -58,6 +58,24 @@ class Source:
     def close(self):
         self.data = None
         self.levels = []
+
+
+def delete_source(src: Source) -> bool:
+    """Close a source and delete its working files (the sound and the peak levels). → whether they are gone (a file
+    still mapped somewhere on Windows stays until the session folder is removed)."""
+    path = src.path
+    src.close()
+    if not path:
+        return True
+    ok = True
+    for p in [path] + [f"{path}.p{k}" for k in range(16)]:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            ok = False
+    return ok
 
 
 def _block_peaks(x: np.ndarray) -> np.ndarray:
