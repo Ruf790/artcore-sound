@@ -63,12 +63,24 @@ class Failed:
     detail: str = ""                # what the process said before it died
 
 
+def long_path(path: str) -> str:
+    """Windows: the full form of a path (C:\\Users\\RUNNER~1 → C:\\Users\\runneradmin) — JUCE does not take the
+    8.3 short names."""
+    if sys.platform != "win32" or "~" not in path:
+        return path
+    import ctypes
+    buf = ctypes.create_unicode_buffer(32768)
+    n = ctypes.windll.kernel32.GetLongPathNameW(str(path), buf, len(buf))
+    return buf.value if 0 < n < len(buf) else path
+
+
 def find_files(dirs: list[str]) -> list[str]:
     """The .vst3 plugins in the folders (and their subfolders): a bundle (a folder named *.vst3) counts once."""
     out, seen = [], set()
     for root in dirs:
         if not root or not os.path.isdir(root):
             continue
+        root = long_path(os.path.abspath(root))
         for here, subdirs, files in os.walk(root):
             keep = []
             for s in subdirs:

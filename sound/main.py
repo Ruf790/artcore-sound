@@ -511,7 +511,15 @@ def _selftest_vst3(session, tmp: str, lines: list) -> None:
     lines.append(f"VST3 scan: {n} plugins, {bad} not loaded: {names}")
     for f in lib.failed():
         lines.append(f"  not loaded: {f.path}: {f.reason} {f.detail}")
-    if n != 2 or bad:
+    if n != 2 or bad:                                  # what pedalboard says of the plugin itself, three ways
+        inner = os.path.join(plug, "Contents", "x86_64-win", os.path.basename(plug))
+        for what in (plug, scan.long_path(os.path.join(folder, os.path.basename(plug))), inner):
+            try:
+                names = pedalboard.VST3Plugin.get_plugin_names_for_file(what)
+                pedalboard.load_plugin(what, plugin_name=names[0])
+                lines.append(f"  pedalboard loads {what}: {names}")
+            except Exception as e:                       # noqa: BLE001
+                lines.append(f"  pedalboard fails on {what}: {type(e).__name__}: {e}")
         raise RuntimeError("the VST3 scan")
     p = next(p for p in lib.plugins() if p.name == "ArtCore Test Plug Latency")
     rate = 48000
