@@ -46,7 +46,8 @@ def resolve(ref: dict) -> dict:
 
 
 class VstProcessor(Processor):
-    def __init__(self, effect, rate, labels, values):
+    def __init__(self, effect, rate, labels, values, shared=None):
+        self.shared = shared                    # 3.0: a vst.client.SharedHost (a multitrack chain's host)
         self.host = None
         self._loaded = None                     # (path, name, mode, use) of the plugin loaded
         self._state = None
@@ -65,7 +66,7 @@ class VstProcessor(Processor):
         if self.host is None or self.host.dead or want != self._loaded or not old:
             self.close()
             ref = resolve(ref)
-            self.host = Host()
+            self.host = self.shared.slot() if self.shared is not None else Host()
             try:
                 info = self.host.load(ref["path"], ref.get("name") or "", self.rate, self.ch, p["mode"],
                                       p["use"] or None)
@@ -133,6 +134,9 @@ class VstEffect(Effect):
                              ("each", "vst_mode_each")), label="vst_mode")]
     has_tail = True
     proc_class = VstProcessor
+
+    def processor(self, rate: int, labels, values: dict, host=None) -> VstProcessor:
+        return VstProcessor(self, rate, labels, values, shared=host)
 
     def defaults(self) -> dict:
         return {"plugin": {}, "state": "", "params": {}, "mode": "auto", "use": []}

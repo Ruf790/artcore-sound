@@ -13,6 +13,8 @@ Commands (a tuple, the answer ("ok", payload) or ("err", message)):
   get                         {state, params, editor, editor_error}
   editor on|off               the plugin's own window (in this process, on its main thread)
   preset_load path / preset_data      a .vstpreset file in, the current one out (bytes)
+  at slot cmd                 3.0: the command for plug-in `slot` of a multitrack chain (one host per track, every
+                              plug-in of the chain in it, each with its own shared memory); unload frees a slot
   quit
 
 Channels (mode): "all" — one instance on every channel used (if the plugin takes that many); "pairs" — one per
@@ -211,6 +213,7 @@ class Host:
     def __init__(self, conn):
         self.conn = conn
         self.rack: Rack | None = None
+        self.racks: dict = {}                   # 3.0: slot → Rack (the plug-ins of a track's chain)
         self.editor_q: queue.Queue = queue.Queue()
         self.editor_open = False
         self.editor_error = ""
@@ -219,6 +222,21 @@ class Host:
 
     def answer(self, cmd: tuple):
         op = cmd[0]
+        if op == "at":
+            slot, inner = cmd[1], tuple(cmd[2])
+            if inner[0] == "unload":
+                r = self.racks.pop(slot, None)
+                if r is not None:
+                    r.close()
+                return None
+            keep = self.rack
+            self.rack = self.racks.get(slot)
+            try:
+                return self.answer(inner)
+            finally:
+                if self.rack is not None:
+                    self.racks[slot] = self.rack
+                self.rack = keep
         r = self.rack
         if op == "load":
             if r is not None:
@@ -324,6 +342,8 @@ def serve(address: str) -> int:
         pass
     if host.rack is not None:
         host.rack.close()
+    for r in host.racks.values():
+        r.close()
     os._exit(0)                                         # a plugin's threads must not keep the process alive
 
 

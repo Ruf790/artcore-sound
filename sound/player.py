@@ -12,6 +12,9 @@ The reader also keeps the last frames it prepared (after the effect, before the 
 frame count; the callback notes how far the sound card has got, so tap(n) gives the n frames being heard now — the
 live spectrum (0.4).
 
+A multitrack project (3.0) plays the same way: its mixer (mt/engine.py) looks to the reader like a document whose
+read() mixes; with it the reader keeps as little ready as with an effect.
+
 The listening volume (2.0) is applied last, in the callback, after the downmix: a change is heard at the next buffer
 (not after the half second the reader keeps ready) and ramps over VOL_RAMP, so moving the slider never clicks. The
 meters and tap() come before it — they show the file's own level, clipping included."""
@@ -121,7 +124,10 @@ VOL_RAMP = 0.03                # seconds for a full-scale change of the listenin
 
 
 class Volume:
-    """The listening volume (2.0): what is heard — playback, the preview of effects, the monitoring of an input —
+    """A multitrack project (3.0) plays the same way: its mixer (mt/engine.py) looks to the reader like a document whose
+read() mixes; with it the reader keeps as little ready as with an effect.
+
+The listening volume (2.0): what is heard — playback, the preview of effects, the monitoring of an input —
     never the file, its saving or render(). One object shared by the player and the input monitor; each output
     ramps towards gain() on its own (GainRamp), in its audio callback, after the downmix and after the meters."""
 
@@ -235,7 +241,7 @@ class Player:
             return False
         self._run = True
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._fill(int(self.out_rate * (0.06 if self.fx is not None else 0.15)))  # ready before the first callback
+        self._fill(int(self.out_rate * (0.06 if self._quick else 0.15)))  # ready before the first callback
         self._reader.start()
         self.state = "play"
         try:
@@ -313,6 +319,11 @@ class Player:
     def done(self) -> bool:
         return self.finished.is_set()
 
+    @property
+    def _quick(self) -> bool:
+        """An effect previewed or a multitrack mix (3.0: doc.live): less kept ready, so changes are heard soon."""
+        return self.fx is not None or bool(getattr(self.doc, "live", False))
+
     # ── the output ────────────────────────────────────────────
     def _open(self) -> bool:
         sd = _sd()
@@ -352,7 +363,7 @@ class Player:
         return True
 
     def _read_loop(self) -> None:
-        want = int(self.out_rate * (AHEAD_FX if self.fx is not None else AHEAD))
+        want = int(self.out_rate * (AHEAD_FX if self._quick else AHEAD))
         while self._run:
             if self._qframes < want and not self._eof:
                 self._fill(want)
@@ -369,7 +380,7 @@ class Player:
                 else:
                     self._eof = True
                     break
-            n = min(BLOCK if self.fx is None else BLOCK_FX, self.end - p)
+            n = min(BLOCK_FX if self._quick else BLOCK, self.end - p)
             x = doc.read(p, n)
             if self.fx is not None:
                 x = self.fx.process(x)
