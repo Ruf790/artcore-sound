@@ -76,6 +76,20 @@ DEFAULTS = {
     # 2.0
     "play_volume_db": 0.0,          # the listening volume (only what is heard, never the file)
     "play_muted":    False,
+    # 3.0: the multitrack
+    "mt_dir":        "",            # where new projects go ("" — Documents\ArtCore Sound\Projects)
+    "mt_rate":       48000,
+    "mt_channels":   2,             # the master of a new project: 2 | 6
+    "mt_tracks":     4,             # the tracks a new project starts with
+    "mt_snap":       True,
+    "mt_preroll":    2.0,           # seconds played before a punch-in
+    "mt_rec_offset_ms": 0.0,        # what the clocks do not see of the input's delay (converters, a cable)
+    "mt_cache_gb":   50,            # the decoded files' cache at most (the least used go first)
+    "mt_mix_what":   "whole",
+    "mt_mix_format": "wav",
+    "mt_mix_option": "",
+    "mt_mix_tail":   True,
+    "mt_mix_dir":    "",
 }
 
 RECENT_MAX = 12

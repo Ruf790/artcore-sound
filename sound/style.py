@@ -443,6 +443,16 @@ QPushButton#record {{ color: #ffffff; background: #d6363c; border: 1px solid #b0
                       padding: 6px 16px; }}
 QPushButton#record:hover {{ background: #e5484d; }}
 QPushButton#record:disabled {{ background: {PANEL2}; color: {MUTED}; border-color: {BORDER}; }}
+QWidget#mtHeaders {{ background: {PANEL}; border-right: 1px solid {BORDER}; }}
+QWidget#mtHeader {{ background: {PANEL}; border-bottom: 1px solid {BORDER}; }}
+QWidget#mtHeader[current="true"] {{ background: {PANEL2}; }}
+QWidget#mtMixer, QWidget#mtMixerInner {{ background: {BG}; }}
+QFrame#mtStrip {{ background: {PANEL}; border: 1px solid {BORDER}; }}
+QLabel#mtName {{ font-weight: 700; }}
+QToolButton#mtBtn {{ background: {PANEL2}; border: 1px solid {BORDER}; padding: 0px 3px; font-size: 8pt;
+                     font-weight: 700; min-height: 16px; }}
+QToolButton#mtBtn:hover {{ border-color: {ACCENT}; }}
+QListWidget#mtFx {{ background: {FIELD_BG}; border: 1px solid {BORDER}; font-size: 8pt; }}
 """
 
 

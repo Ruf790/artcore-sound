@@ -26,6 +26,7 @@ python -m PyInstaller --noconfirm --clean --windowed ^
   --collect-all pedalboard ^
   --hidden-import pedalboard_native ^
   --collect-submodules comtypes ^
+  --collect-submodules sound.mt ^
   --exclude-module PySide6.QtQml ^
   --exclude-module PySide6.QtQuick ^
   --exclude-module PySide6.QtQuickWidgets ^

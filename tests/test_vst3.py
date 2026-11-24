@@ -401,3 +401,62 @@ def test_macro_with_a_plugin(plug, session):
     assert d.frames == 2 * RATE
     assert np.array_equal(y[:RATE], x[:RATE])
     assert np.allclose(y[RATE:], x[RATE:] * 10 ** (6 / 20), atol=1e-6)
+
+
+# ── 3.0: plug-ins in a multitrack chain ───────────────────────
+def _mt_project(tmp_path, x):
+    from sound.mt import media as M
+    from sound.mt.model import Project
+    w = M.WavWriter(str(tmp_path / "imp.wav"), x.shape[1], RATE, str(tmp_path / "imp.pk"))
+    w.append(x)
+    w.finish()
+    m = M.load(M.Media("imp", str(tmp_path / "imp.wav")), RATE, str(tmp_path))
+    p = Project(RATE, 2, "V", str(tmp_path / "V.acproj"), str(tmp_path))
+    p.media[m.id] = m
+    return p
+
+
+def test_multitrack_chain_one_host_and_delay_compensation(plug, tmp_path):
+    """Two plug-ins on a track run in one host process (the track's); the latency plug-in's 1000 frames are made up
+    for, so the track lines up with a dry one frame for frame; live and rendered alike."""
+    from sound.mt import engine
+    from sound.mt.model import Slot
+    x = np.zeros((20000, 2), np.float32)
+    x[5000] = 0.25
+    p = _mt_project(tmp_path, x)
+    dry, wet = p.add_track("dry"), p.add_track("wet")
+    p.add_clip(dry.id, "imp", 0, 20000)
+    p.add_clip(wet.id, "imp", 0, 20000)
+    p.set_fx(wet.id, [Slot("vst3", {"plugin": _ref(plug, LATE), "params": {"gain_db": GAIN_6DB}}),
+                      Slot("vst3", {"plugin": _ref(plug, PLAIN)})])
+    eng = engine.Engine(p, live=False)
+    try:
+        eng.seek(0)
+        procs = [v[2] for v in eng.nodes[wet.id].chain.procs.values()]
+        assert len(procs) == 2 and procs[0].host.h is procs[1].host.h       # one host process for the track
+        assert eng.latency >= 1000
+        y = np.concatenate([eng.read(pos, 4096) for pos in range(0, 20000, 4096)])[:20000]
+    finally:
+        eng.close()
+    nz = np.flatnonzero(np.abs(y[:, 0]) > 1e-6).tolist()
+    assert nz == [5000], nz
+    assert abs(y[5000, 0] - 0.25 * (1 + 10 ** (6 / 20))) < 1e-3
+
+
+def test_multitrack_plugin_crash_keeps_the_mix_going(plug, tmp_path):
+    from sound.mt import engine
+    from sound.mt.model import Slot
+    x = np.full((20000, 2), 0.1, np.float32)
+    p = _mt_project(tmp_path, x)
+    dry, bad = p.add_track("dry"), p.add_track("bad")
+    p.add_clip(dry.id, "imp", 0, 20000)
+    p.add_clip(bad.id, "imp", 0, 20000)
+    p.set_fx(bad.id, [Slot("vst3", {"plugin": _ref(plug, PLAIN), "params": {"crash": 1.0}})])
+    eng = engine.Engine(p, live=False)
+    try:
+        eng.seek(0)
+        y = eng.read(0, 20000)
+        assert eng.errors                                                   # the plug-in's error is known
+    finally:
+        eng.close()
+    assert np.all(np.abs(y[1000:, 0] - 0.1) < 1e-6) or np.all(np.abs(y[1000:, 0] - 0.2) < 1e-6)

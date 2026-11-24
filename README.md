@@ -57,6 +57,17 @@
 - **Рип** (Файл → Audio CD → Рип, Ctrl+Shift+D): треки с CD-TEXT или названиями из **MusicBrainz**, правка названий; в файлы любого формата с тегами и шаблоном имени (с подпапками: `{artist} - {album}/{n:2} - {title}`; FLAC/WAV 16 бит — бит в бит), в редактор по трекам или **весь диск одним файлом с регионами**. **Надёжное чтение:** каждый кусок читается дважды, несовпавшие перечитываются, пока два чтения не совпадут; отчёт с CRC трека. Поправка на смещение чтения привода (по списку AccurateRip).
 - **Запись** (Файл → Audio CD → Записать): треки из регионов, от каждой метки или весь файл; паузы между треками по выбору; **CD-TEXT** (кириллица латиницей — в CD-TEXT её нет); запись диском целиком (DAO — образ собирается программой) или по трекам; скорость, проверка диска, **стирание CD-RW**, «Сохранить образ .cue/.bin». Рип, записанный обратно без правки, совпадает с оригиналом до бита. Через службу записи Windows (IMAPI2), ничего ставить не нужно.
 
+### Мультитрек (новое в 3.0)
+![Мультитрек](docs/screenshots/multitrack_dark.png)
+
+- **Проект** — вкладка «Мультитрек» рядом с файлами (Мультитрек → Новый мультитрек-проект, Ctrl+Alt+N): частота, мастер стерео или 5.1. Файл проекта `.acproj` (JSON) хранит дорожки, клипы, эффекты, огибающие, метки и **пути к файлам** — звук не копируется. WAV 16 / 24 / 32 бит и float (RIFF / RF64) на частоте проекта читаются прямо из файла; FLAC, MP3, звук из видео, WAV другой частоты один раз декодируются в кэш и при следующем открытии берутся оттуда. Записи, отправленные из редактора куски и сведённые дорожки сохраняются в папку «<имя> Audio» рядом с проектом. Пути внутри папки проекта относительные — папку можно перенести целиком; пропавший файл можно указать заново. Неограниченная отмена, журнал для восстановления после сбоя со всей историей, как у документов.
+- **Дорожки** моно, стерео и 5.1, **шины**. **Клипы** из файлов (перетаскиванием на дорожку или Ctrl+Shift+I), из открытого документа («Отправить в мультитрек», Ctrl+Alt+T — выделение или весь файл); перемещение мышью (по дорожкам тоже, Ctrl — копия), обрезка краёв, разрезание (S), дублирование (Ctrl+D), копирование и вставка, удаление диапазона времени; привязка к краям клипов, меткам, курсору и сетке (N, Shift — без привязки). Громкость клипа и нарастание / затухание — ручками на клипе, формы кривых из меню; наложение клипов — автоматический кроссфейд.
+- **«Открыть клип в редакторе»** (Ctrl+Shift+O, двойной щелчок): файл клипа во вкладке редактора со всеми его инструментами; «Сохранить» пишет копию «(правка N)» в папку проекта, и клип играет её — исходник не трогается, шаг отменяется в проекте. «Вернуться в мультитрек».
+- **Микшер** (F9) под дорожками и заголовки дорожек слева: громкость, панорама (моно — равная мощность, стерео — баланс), без звука / соло, фаза, индикаторы по дорожкам, шинам и мастеру; **огибающие громкости и панорамы** точками на дорожке (E); выход дорожки на мастер или шину, **посылы** на шины до или после фейдера; **цепочки эффектов** на дорожках, шинах и мастере — свои эффекты в реальном времени и **VST3** (все плагины дорожки в одном процессе-хосте; упал плагин — дорожка играет без него). **Задержка плагинов компенсируется** по всему графу.
+- **Воспроизведение** через тот же плеер WASAPI: микширование на ходу примерно на 0,1 с вперёд, поэтому фейдеры и mute слышны сразу и без щелчков; диск читается заранее отдельным потоком, дорожки с эффектами считаются параллельно. Транспорт, луп, метки и регионы проекта, громкость прослушивания из 2.0. Окно видео (F8) идёт синхронно с проектом — «Мультитрек → Видео к проекту…» (и звук фильма на дорожку).
+- **Запись на дорожки** (● на дорожке, Ctrl+R): у каждой дорожки свой вход (устройство и каналы, дорожки на одном устройстве пишут вместе), «Слушать вход», запись поверх играющего, **punch-in/out** по выделению (P) с предпрокруткой, **дубли** (повтор того же участка или каждый круг лупа — дубль клипа). **Задержка записи учитывается** по часам потоков PortAudio на любой звуковой карте; для остального есть поправка в «Параметрах записи».
+- **Сведение** (Ctrl+Shift+X): весь проект, выделение или каждый регион в свой файл любого формата, **стемы** по дорожкам, в новую вкладку редактора; с хвостами эффектов. «Свести дорожку в новую» (с эффектами). Что слышно, то и записывается — до бита (это проверяют тесты).
+
 ### Пакетная обработка (новое в 1.0)
 ![Пакетная обработка](docs/screenshots/batch_dark.png)
 
@@ -95,6 +106,15 @@
 «Своя» память — без страниц отображённых звуковых файлов (их Windows отдаёт по первому требованию, это кэш, а не память программы). Полный отчёт с RSS — в артефактах задачи `stress` в CI.
 <!-- /stress -->
 
+**Мультитрек (3.0)** — та же задача следом проверяет проект 2 ч 30 мин × 8 дорожек (48 клипов из WAV 24 бит, читаемого на месте, и FLAC 44,1 кГц, декодированного в кэш; эквалайзер и компрессор на половине дорожек, шина с реверберацией на посылах, огибающие) — на той же машине с 2 ядрами:
+
+| | Время | Память процесса (своя) |
+|---|---|---|
+| Пики WAV 30 мин / FLAC → кэш 48 кГц / повторное открытие из кэша | 5,9 с / 2,9 с / мгновенно | 143 МБ |
+| Микширование на ходу, блоки по 1024 кадра (21,3 мс) | в среднем 2,0 мс (10× реального времени), 99 % ≤ 3,8 мс | 194 МБ |
+| 1000 перемещений клипов и 1000 отмен / журнал 1081 шага | 0,03 с / 0,13 с, 1 МБ | |
+| Свести весь проект в FLAC 24 бит (1,9 ГБ) | 405 с (22×) | 199 МБ |
+
 ### Оформление
 Как у ArtCore Convert: тёмная и светлая тема (или как в Windows), классический или современный стиль, иконки Font Awesome, интерфейс на русском и английском. Окно запоминает панели, режим вида, разделители, размеры диалогов и последние настройки. Автообновление через GitHub Releases.
 
@@ -129,6 +149,20 @@
 | Снять выделение | Esc |
 | Выделить до начала | Shift+Home |
 | Выделить до конца | Shift+End |
+| **Мультитрек** | |
+| Новый мультитрек-проект | Ctrl+Alt+N |
+| Отправить в мультитрек | Ctrl+Alt+T |
+| Дорожки → Добавить стерео-дорожку | Ctrl+Shift+T |
+| Дорожки → Добавить шину | Ctrl+Shift+B |
+| Добавить файлы на дорожку | Ctrl+Shift+I |
+| Разрезать клипы | S |
+| Дублировать клипы | Ctrl+D |
+| Открыть клип в редакторе | Ctrl+Shift+O |
+| Привязка | N |
+| Огибающие громкости и панорамы | E |
+| Микшер | F9 |
+| Punch-in/out по выделению | P |
+| Свести в файл | Ctrl+Shift+X |
 | **Метки** | |
 | Добавить метку | M |
 | Регион из выделения | R |
@@ -193,6 +227,7 @@
 | ![Плагин VST3](docs/screenshots/fx_vst3_dark.png) | ![Настройки VST3](docs/screenshots/settings_vst3_light.png) |
 | ![Макрос](docs/screenshots/macro_dialog_dark.png) | ![Запись макроса](docs/screenshots/macro_recording_dark.png) |
 | ![Рип Audio CD](docs/screenshots/cd_rip_dark.png) | ![Запись Audio CD](docs/screenshots/cd_burn_light.png) |
+| ![Мультитрек, светлая тема](docs/screenshots/multitrack_light.png) | ![Сведение](docs/screenshots/mt_mixdown_dark.png) |
 
 ## Установка
 
@@ -221,9 +256,10 @@ An audio editor for Windows in the spirit of Sound Forge.
 - **VST3 plugins (new in 2.0)** through Spotify's pedalboard: Effects → VST3 plugins (by maker, the last used first), Settings → VST3 (folders, scan, those that did not load with Retry); the plugin's window has its parameters, **its own editor**, presets with its state and `.vstpreset` files, preview, bypass, the tail, its latency made up for; 5.1 all at once, **in pairs**, each channel alone or chosen channels only; a batch step. **A plugin that crashes or hangs does not take the program down:** each runs in a process of its own (`ArtCoreSound.exe --vst-host`, the sound through shared memory).
 - **Macros (new in 2.0):** Macros → Record (Ctrl+Shift+M) keeps editing, processing, effects, plugins and saving with their settings; selections as seconds from the start or the end of the file, so one macro fits files of any length; a name, a hotkey, steps to reorder, switch off or change; run on a selection or a file as one undo step (the file untouched if a step fails); `.acmacro` import / export; a batch step.
 - **Audio CD (new in 2.0):** rip (Ctrl+Shift+D) with CD-TEXT or **MusicBrainz** names into files of any format with tags and a name template with folders (16-bit FLAC / WAV bit for bit), into the editor per track or **the whole disc as one file with regions**; **secure reading** (each piece read twice, differing pieces re-read until two reads agree, a report with CRCs), the drive's read offset. Burn the regions, the markers or the whole file with chosen pauses and **CD-TEXT** (Cyrillic spelt in Latin letters), disc-at-once (the program builds the raw image) or track-at-once, erase a CD-RW, save as .cue / .bin — a rip burnt back unedited is the same disc bit for bit; through Windows' own IMAPI2.
+- **Multitrack (new in 3.0):** a project tab (Ctrl+Alt+N; stereo or 5.1 master) saved as `.acproj` (JSON with paths — no sound copied; WAV at the project's rate read in place, anything else decoded once into a cache; recordings and the like go to «<name> Audio» next to the project; relative paths, relink a missing file; unlimited undo and crash recovery with the whole history). Mono, stereo and 5.1 tracks and **buses**; clips from files (drag and drop), from an editor document («Send to multitrack», Ctrl+Alt+T); move, trim, split, duplicate, copy / paste, snapping, clip volume and fades with curves, automatic crossfades; **«Open the clip in the editor»** — saving writes an «(edit N)» copy the clip then plays, the original untouched. **Mixer** (F9): volume, pan, mute / solo, polarity, meters, **volume and pan envelopes**, outputs to buses, pre / post-fader **sends**, **effect chains** on tracks, buses and the master (own effects and **VST3**, one plug-in host per track) with **plug-in delay compensation**. Live mixing through the same WASAPI player (faders heard within ~0.1 s, disk read ahead in a thread, tracks with effects in parallel), loop, markers and regions, the video window in sync. **Recording onto tracks**: an input per track, monitoring, over what plays, **punch in / out** with pre-roll, **takes**, latency compensated from PortAudio's stream clocks on any sound card. **Mixdown** (Ctrl+Shift+X) of the project, the selection or each region to any format, **stems**, into an editor tab, with effect tails; bounce a track — bit for bit what was heard.
 - **Batch processing (new in 1.0)** — Tools → Batch processing (Ctrl+B): a folder (with subfolders, an extension filter) or a list of files (drag and drop), which track of a video (the default, by language, all); a chain of any Process and Effects steps — added, removed, reordered, switched on and off, set in the same effect windows with presets and a preview of the first 30 s of the first file; the output format and quality (or «as the source»), the same or another folder keeping the subfolders, a name template (`{name}`, `{n}`, `{n:3}`, `{date}`, `{track}`, `{lang}`, a suffix), skip / replace / new name for existing files, tags and markers kept; batches saved as presets (`.acbatch`). It runs in the background in worker processes (half the cores by default), streaming through the disk with the disk space reserved per file; per-file and overall progress, pause, stop (unfinished files removed); a broken file does not stop the batch; a log per file (done / error in plain words, LUFS and peak before and after, time), a summary, a CSV or text report.
 - **Robustness (new in 1.0):** a journal of every document's piece table, undo history and markers — after a crash the next start offers the unsaved documents back with their history; unhandled errors are logged (with the last actions) and shown with «Copy the report»; a full disk mid-operation gives a clear message, leaves the document as it was and removes the partial files; errors in plain words; long paths and Cyrillic names.
-- **Long files:** a 2–3 h 5.1 film opens, draws, edits and processes from disk without memory growth — see `tools/stress_long.py` (a CI job run by hand).
+- **Long files:** a 2–3 h 5.1 film opens, draws, edits and processes from disk without memory growth; so does a 2.5 h multitrack project of 8 tracks (mixed live at 10× real time, mixed down at 22× with under 200 MB of the process's own memory) — see `tools/stress_long.py` (a CI job run by hand).
 - Dark and light themes, a classic and a modern look, Russian and English; the window remembers its panels, view, splitters, dialog sizes and last settings; automatic updates through GitHub Releases.
 
 ### Hotkeys
@@ -257,6 +293,20 @@ An audio editor for Windows in the spirit of Sound Forge.
 | Select none | Esc |
 | Select to the start | Shift+Home |
 | Select to the end | Shift+End |
+| **Multitrack** | |
+| New multitrack project | Ctrl+Alt+N |
+| Send to multitrack | Ctrl+Alt+T |
+| Tracks → Add a stereo track | Ctrl+Shift+T |
+| Tracks → Add a bus | Ctrl+Shift+B |
+| Add files to the track | Ctrl+Shift+I |
+| Split the clips | S |
+| Duplicate the clips | Ctrl+D |
+| Open the clip in the editor | Ctrl+Shift+O |
+| Snap | N |
+| Volume and pan envelopes | E |
+| Mixer | F9 |
+| Punch in / out on the selection | P |
+| Mix down to a file | Ctrl+Shift+X |
 | **Markers** | |
 | Add a marker | M |
 | A region of the selection | R |

@@ -3,7 +3,10 @@ beside it, the transport (play cursor counter, selection fields, format) and the
 saving, effects) run in a thread with a progress bar and Cancel in the status bar.
 
 0.4: the spectrum panel under the waveform, the view modes (wave / spectrogram / both), the Markers menu and the list
-of markers and regions under the meters, the Record window behind the transport's red button."""
+of markers and regions under the meters, the Record window behind the transport's red button.
+
+3.0: a tab can be a multitrack project (mtwin.py): its view takes the waveform's place, the meters and the marker
+list beside it are the master's and the project's, and the commands of Edit, Markers and Transport work on it."""
 from __future__ import annotations
 
 import os
@@ -14,7 +17,7 @@ from PySide6.QtCore import QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressBar, QScrollBar, QSplitter,
-                               QTabBar, QToolButton, QVBoxLayout, QWidget)
+                               QStackedWidget, QTabBar, QToolButton, QVBoxLayout, QWidget)
 
 from . import APP_TITLE, AUDIO_EXT, VERSION, VIDEO_EXT, analysis, config, ff, keys, media, proc, style, winint
 from . import spectrogram as sgm
@@ -22,6 +25,9 @@ from .doc import Document, fmt_time, parse_time
 from .errors import human as human_error
 from .i18n import fmt_bytes, t
 from .filmwin import FilmCommands
+from .mt import projfile
+from .mt.model import Project
+from .mtwin import PROJECT_EXT, MultitrackCommands
 from .player import Player, Volume
 from .volui import STEP_DB, VolumeControl
 from .waveview import Meters, Overview, WaveView
@@ -40,7 +46,7 @@ class Bridge(QObject):
     stats = Signal(object, object)              # key, analysis.Stats (the status bar's background measuring)
 
 
-class MainWindow(QMainWindow, FilmCommands):
+class MainWindow(QMainWindow, FilmCommands, MultitrackCommands):
     UPDATE_EVERY = 24 * 3600
 
     def __init__(self, cfg: dict, session):
@@ -122,6 +128,7 @@ class MainWindow(QMainWindow, FilmCommands):
     def _build(self) -> None:
         from .anaui import SpectrumPanel
         from .markui import MarkerList
+        self.mt_init()                               # 3.0: the projects, the multitrack view
         self.wave = WaveView()
         self.wave.set_sg_settings(sgm.Settings.from_dict(self.cfg.get("spectrogram")))
         self.wave.set_mode(self.cfg.get("view_mode", "wave"))
@@ -160,7 +167,10 @@ class MainWindow(QMainWindow, FilmCommands):
         self.spec_panel.windowRequested.connect(self.spectrum_dialog)
         lv.addWidget(self.spec_panel)
         self.spec_panel.setVisible(bool(self.cfg.get("spectrum_panel_on", True)))
-        mid.addWidget(left)
+        self.center_stack = QStackedWidget()         # 3.0: the waveform or a project's multitrack view
+        self.center_stack.addWidget(left)
+        self.center_stack.addWidget(self.mt_view)
+        mid.addWidget(self.center_stack)
         right = QWidget()
         right.setObjectName("sidePanel")
         rv = QVBoxLayout(right)
@@ -273,6 +283,7 @@ class MainWindow(QMainWindow, FilmCommands):
         self.a_sel_none = A(m, "", t("select_none"), self.select_none, "Esc")
         self.a_sel_start = A(m, "", t("select_to_start"), lambda: self._select_to(0), "Shift+Home")
         self.a_sel_end = A(m, "", t("select_to_end"), lambda: self._select_to(None), "Shift+End")
+        self.build_mt_menu(mb, A)                    # 3.0: Мультитрек / Multitrack
         m = mb.addMenu(t("m_markers"))
         self.mk_actions = {}
         for key, icon, text, slot, seq in (
@@ -295,10 +306,10 @@ class MainWindow(QMainWindow, FilmCommands):
         m.addSeparator()
         m.addAction(self.a_save_regions)
         m = mb.addMenu(t("m_view"))
-        self.a_zoom_in = A(m, "fa6s.magnifying-glass-plus", t("zoom_in"), lambda: self.wave.zoom(0.5), ["Up", "Ctrl+="])
-        self.a_zoom_out = A(m, "fa6s.magnifying-glass-minus", t("zoom_out"), lambda: self.wave.zoom(2.0),
+        self.a_zoom_in = A(m, "fa6s.magnifying-glass-plus", t("zoom_in"), lambda: self._zoom(0.5), ["Up", "Ctrl+="])
+        self.a_zoom_out = A(m, "fa6s.magnifying-glass-minus", t("zoom_out"), lambda: self._zoom(2.0),
                             ["Down", "Ctrl+-"])
-        self.a_zoom_all = A(m, "fa6s.expand", t("zoom_all"), self.wave.zoom_all, "Ctrl+Up")
+        self.a_zoom_all = A(m, "fa6s.expand", t("zoom_all"), lambda: self._zoom(None), "Ctrl+Up")
         self.a_zoom_sel = A(m, "fa6s.arrows-left-right", t("zoom_sel"), self._zoom_sel, "Ctrl+Down")
         self.a_zoom_smp = A(m, "fa6s.wave-square", t("zoom_samples"), self.wave.zoom_samples, "Ctrl+Shift+Up")
         m.addSeparator()
@@ -465,10 +476,10 @@ class MainWindow(QMainWindow, FilmCommands):
                                      ("silence", "fa6s.volume-xmark", K(self.a_silence), self.silence),
                                      ("|", None, None, None),
                                      ("zoom_in", "fa6s.magnifying-glass-plus", K(self.a_zoom_in),
-                                      lambda: self.wave.zoom(0.5)),
+                                      lambda: self._zoom(0.5)),
                                      ("zoom_out", "fa6s.magnifying-glass-minus", K(self.a_zoom_out),
-                                      lambda: self.wave.zoom(2.0)),
-                                     ("zoom_all", "fa6s.expand", K(self.a_zoom_all), self.wave.zoom_all),
+                                      lambda: self._zoom(2.0)),
+                                     ("zoom_all", "fa6s.expand", K(self.a_zoom_all), lambda: self._zoom(None)),
                                      ("|", None, None, None)):
             if key == "|":
                 h.addWidget(self._sep())
@@ -602,10 +613,20 @@ class MainWindow(QMainWindow, FilmCommands):
     @property
     def doc(self) -> Document | None:
         i = self.tabs.currentIndex()
-        return self.docs[i] if 0 <= i < len(self.docs) else None
+        x = self.items[i] if 0 <= i < len(self.items) else None
+        return x if isinstance(x, Document) else None
+
+    def _zoom(self, factor) -> None:
+        if self.proj is not None:
+            self.mt_zoom(factor)
+        elif factor is None:
+            self.wave.zoom_all()
+        else:
+            self.wave.zoom(factor)
 
     def add_doc(self, d: Document) -> None:
         self.docs.append(d)
+        self.items.append(d)
         i = self.tabs.addTab(style.icon("fa6s.wave-square"), d.name)
         self.tabs.setTabToolTip(i, d.path or d.name)
         self.tabs.show()
@@ -615,39 +636,45 @@ class MainWindow(QMainWindow, FilmCommands):
     def _on_tab(self, i: int) -> None:
         self.stop_play()
         d = self.doc
+        p = self.proj
         self.wave.set_doc(d)
         self.overview.setVisible(d is not None)
-        self.meters.set_channels(d.labels if d else ["L", "R"])
-        self.meters.reset()
-        self.mlist.fill(d)
+        self.mt_show(p)
+        if p is None:
+            self.meters.set_channels(d.labels if d else ["L", "R"])
+            self.meters.reset()
+            self.mlist.fill(d)
         self._update_all()
 
     def _on_tab_moved(self, a: int, b: int) -> None:
-        self.docs.insert(b, self.docs.pop(a))
+        self.items.insert(b, self.items.pop(a))
 
     def close_doc(self, i: int) -> bool:
-        if not (0 <= i < len(self.docs)):
+        if not (0 <= i < len(self.items)):
             return False
-        d = self.docs[i]
+        if isinstance(self.items[i], Project):
+            return self.mt_close(i, self.items[i])
+        d = self.items[i]
         if self.job and self._job_doc is d:
             self._toast(t("busy", self.job[0]))
             return False
         if d.dirty and not self._ask_save(d, i):
             return False
         self.stop_play()
-        self.docs.pop(i)
+        self.docs.remove(d)
+        self.items.pop(i)
         self.tabs.blockSignals(True)
         self.tabs.removeTab(i)
         self.tabs.blockSignals(False)
         d.close()
-        if not self.docs:
+        if not self.items:
             self.tabs.hide()
         self._on_tab(self.tabs.currentIndex())
         return True
 
     def close_all(self) -> bool:
-        while self.docs:
-            if not self.close_doc(len(self.docs) - 1):
+        while self.items:
+            if not self.close_doc(len(self.items) - 1):
                 return False
         return True
 
@@ -668,16 +695,17 @@ class MainWindow(QMainWindow, FilmCommands):
         return False
 
     def _title(self) -> None:
-        d = self.doc
+        d = self.mdoc
         self.setWindowTitle(f"{d.name}{' •' if d.dirty else ''} — {APP_TITLE}" if d else APP_TITLE)
-        for i, x in enumerate(self.docs):
+        for i, x in enumerate(self.items):
             self.tabs.setTabText(i, x.name + (" •" if x.dirty else ""))
 
     # ── opening ───────────────────────────────────────────────
     def open_dialog(self) -> None:
-        exts = " ".join(f"*{e}" for e in AUDIO_EXT + VIDEO_EXT)
+        exts = " ".join(f"*{e}" for e in AUDIO_EXT + VIDEO_EXT + (PROJECT_EXT,))
         paths, _ = QFileDialog.getOpenFileNames(self, t("open"), self.cfg.get("last_dir", ""),
-                                                f"{t('files_audio')} ({exts});;{t('files_all')} (*)")
+                                                f"{t('files_audio')} ({exts});;{t('mt_files')} (*{PROJECT_EXT});;"
+                                                f"{t('files_all')} (*)")
         if paths:
             self.cfg["last_dir"] = os.path.dirname(paths[0])
             self.open_paths(paths)
@@ -698,8 +726,11 @@ class MainWindow(QMainWindow, FilmCommands):
         if self.job or not self._open_queue:
             return
         path = self._open_queue.pop(0)
-        for i, d in enumerate(self.docs):
-            if d.path and os.path.normcase(os.path.abspath(d.path)) == os.path.normcase(os.path.abspath(path)):
+        if path.lower().endswith(PROJECT_EXT):          # 3.0: a multitrack project
+            self.mt_open(path)
+            return
+        for i, d in enumerate(self.items):
+            if isinstance(d, Document) and d.path and os.path.normcase(os.path.abspath(d.path)) == os.path.normcase(os.path.abspath(path)):
                 self.tabs.setCurrentIndex(i)
                 self._toast(t("already_open", d.name))
                 QTimer.singleShot(0, self._open_next)
@@ -765,6 +796,8 @@ class MainWindow(QMainWindow, FilmCommands):
 
     # ── saving ────────────────────────────────────────────────
     def save(self, wait: bool = False) -> bool:
+        if self.proj is not None:
+            return self.mt_save()
         d = self.doc
         if d is None or self._busy():
             return False
@@ -773,6 +806,8 @@ class MainWindow(QMainWindow, FilmCommands):
         return self._save_to(d, d.path, d.save_format, d.save_opts.get("option", ""), wait=wait, rec=True)
 
     def save_as(self, selection: bool = False, wait: bool = False) -> bool:
+        if self.proj is not None:
+            return self.mt_save(True)
         d = self.doc
         if d is None or self._busy():
             return False
@@ -828,6 +863,8 @@ class MainWindow(QMainWindow, FilmCommands):
                 config.add_recent(self.cfg, path)
                 config.save(self.cfg)
             self._toast(t("saved", path))
+            if rng is None:
+                self.mt_after_save(d)                # 3.0: a clip edited for a project
             self._update_all()
         self.run_job(t("saving", os.path.basename(path)), work, done, d)
         if wait:
@@ -838,7 +875,7 @@ class MainWindow(QMainWindow, FilmCommands):
         return True
 
     def _show_file(self) -> None:
-        d = self.doc
+        d = self.mdoc
         if d and d.path:
             winint.show_in_explorer(d.path)
 
@@ -926,6 +963,8 @@ class MainWindow(QMainWindow, FilmCommands):
         return (0, d.frames) if whole_if_none else None
 
     def undo(self) -> None:
+        if self.proj is not None:
+            return self.mt_undo()
         d = self._edit_doc()
         if d and d.undo():
             if self.mrec is not None:                     # 2.0: recording — the last step goes too
@@ -934,6 +973,8 @@ class MainWindow(QMainWindow, FilmCommands):
             self._edited()
 
     def redo(self) -> None:
+        if self.proj is not None:
+            return self.mt_redo()
         d = self._edit_doc()
         if d and d.redo():
             self._edited()
@@ -941,7 +982,7 @@ class MainWindow(QMainWindow, FilmCommands):
     def _fill_history(self) -> None:
         m = self.history_menu
         m.clear()
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
         for i, st in enumerate(d.history):
@@ -951,6 +992,8 @@ class MainWindow(QMainWindow, FilmCommands):
             a.triggered.connect(lambda _c=False, i=i: self._goto_state(i))
 
     def _goto_state(self, i: int) -> None:
+        if self.proj is not None:
+            return self.mt_goto_state(i)
         d = self._edit_doc()
         if d:
             d.goto_state(i)
@@ -1127,6 +1170,9 @@ class MainWindow(QMainWindow, FilmCommands):
             self._macro_status()
 
     def cut(self) -> None:
+        if self.proj is not None:
+            self.mt_cut()
+            return
         d = self._edit_doc()
         if d and d.sel:
             at = self._place(d)
@@ -1135,6 +1181,9 @@ class MainWindow(QMainWindow, FilmCommands):
             self._edited()
 
     def copy(self) -> None:
+        if self.proj is not None:
+            self.mt_copy()
+            return
         d = self.doc
         if d and d.sel:
             self.clip = d.copy(*d.sel)
@@ -1142,6 +1191,9 @@ class MainWindow(QMainWindow, FilmCommands):
             self._update_actions()
 
     def delete(self) -> None:
+        if self.proj is not None:
+            self.mt_delete()
+            return
         d = self._edit_doc()
         if d and d.sel:
             at = self._place(d)
@@ -1167,6 +1219,8 @@ class MainWindow(QMainWindow, FilmCommands):
             self._edited()
 
     def paste(self) -> None:
+        if self.proj is not None:
+            return self.mt_paste()
         d = self._edit_doc()
         if d is None or self.clip is None:
             return
@@ -1225,6 +1279,9 @@ class MainWindow(QMainWindow, FilmCommands):
                 self._edited()
 
     def select_all(self) -> None:
+        if self.proj is not None:
+            self.mt_select_all()
+            return
         d = self.doc
         if d and d.frames:
             d.sel = (0, d.frames)
@@ -1232,6 +1289,9 @@ class MainWindow(QMainWindow, FilmCommands):
             self.wave.update()
 
     def select_none(self) -> None:
+        if self.proj is not None:
+            self.mt_select_none()
+            return
         d = self.doc
         if d:
             d.sel = None
@@ -1239,19 +1299,19 @@ class MainWindow(QMainWindow, FilmCommands):
             self.wave.update()
 
     def _select_to(self, end) -> None:
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
         target = d.frames if end is None else 0
         a, b = sorted((d.cursor, target))
         d.sel = (a, b) if b > a else None
         self._on_selection()
-        self.wave.update()
+        self.pview().update()
 
     def _zoom_sel(self) -> None:
-        d = self.doc
+        d = self.mdoc
         if d and d.sel:
-            self.wave.zoom_range(*d.sel)
+            self.pview().zoom_range(*d.sel)
 
     def _context_menu(self, pos: QPoint) -> None:
         m = QMenu(self)
@@ -1699,6 +1759,7 @@ class MainWindow(QMainWindow, FilmCommands):
     def write_journals(self, force: bool = False) -> None:
         """The journal of every open document whose piece table, history or markers changed (recovery.py)."""
         from . import recovery
+        self.mt_write_journals(force)                # 3.0: the projects
         for d in list(self.docs):
             if not d.history:
                 continue
@@ -1722,8 +1783,12 @@ class MainWindow(QMainWindow, FilmCommands):
         failed = []
         for e in chosen:
             try:
+                if getattr(e, "kind", "document") == "project":      # 3.0
+                    self.mt_restore(e)
+                    n += 1
+                    continue
                 d = recovery.restore(e, self.session)
-            except (OSError, ValueError, KeyError, IndexError) as ex:
+            except (OSError, ValueError, KeyError, IndexError, TypeError) as ex:
                 failed.append(f"{e.name}: {human_error(ex)}")
                 continue
             self.add_doc(d)
@@ -1752,6 +1817,8 @@ class MainWindow(QMainWindow, FilmCommands):
 
     # ── markers and regions (0.4) ─────────────────────────────
     def _markers_changed(self) -> None:
+        if self.proj is not None:
+            return self.mt_marker_changed()
         d = self.doc
         self.mlist.fill(d)
         self.wave.update()
@@ -1760,10 +1827,10 @@ class MainWindow(QMainWindow, FilmCommands):
 
     def add_marker(self) -> None:
         """M: a marker at the cursor — while playing where it plays (the playback goes on)."""
-        d = self.doc
+        d = self.mdoc
         if d is None or self.job:
             return
-        pos = self.player.position() if self.player.state == "play" and self.player.doc is d else d.cursor
+        pos = self.player.position() if self.playing_this(d) else d.cursor
         m = d.add_marker(pos, t("mk_marker_n", self._next_number(d, False)))
         self._markers_changed()
         self.mlist.select_id(m.id)
@@ -1771,7 +1838,7 @@ class MainWindow(QMainWindow, FilmCommands):
 
     def add_region(self) -> None:
         """R: a region of the selection."""
-        d = self.doc
+        d = self.mdoc
         if d is None or self.job:
             return
         if not d.sel:
@@ -1788,10 +1855,10 @@ class MainWindow(QMainWindow, FilmCommands):
 
     def jump_marker(self, direction: int) -> None:
         """Ctrl+← / Ctrl+→: the cursor to the previous / next marker or region edge."""
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
-        playing = self.player.state == "play" and self.player.doc is d
+        playing = self.playing_this(d)
         here = self.player.position() if playing else d.cursor
         pts = d.marker_points()
         if direction < 0:
@@ -1807,43 +1874,44 @@ class MainWindow(QMainWindow, FilmCommands):
             return
         d.cursor = target
         d.sel = None
-        self.wave.ensure_visible(target)
+        self.pview().ensure_visible(target)
         self._on_selection()
-        self.wave.update()
+        self.pview().update()
 
     def goto_marker(self, mid: int) -> None:
         """A double click in the list: a marker → the cursor there, a region → selected."""
-        d = self.doc
+        d = self.mdoc
         m = d.marker(mid) if d else None
         if m is None:
             return
+        view = self.pview()
         if m.end is not None:
             d.sel = (m.pos, m.end)
             d.cursor = m.pos
-            a, b = self.wave.visible()
+            a, b = view.visible()
             if not (a <= m.pos and m.end <= b):
                 if m.end - m.pos > (b - a):
-                    self.wave.zoom_range(m.pos, m.end)
+                    view.zoom_range(m.pos, m.end)
                 else:
-                    self.wave.ensure_visible(m.pos)
+                    view.ensure_visible(m.pos)
         else:
             d.sel = None
             d.cursor = m.pos
-            self.wave.ensure_visible(m.pos)
-            if self.player.state == "play" and self.player.doc is d:
+            view.ensure_visible(m.pos)
+            if self.playing_this(d):
                 self._on_seek(m.pos)
         self._on_selection()
-        self.wave.update()
+        view.update()
 
     def _marker_moved(self, mid: int, pos: int, end) -> None:
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
         d.update_marker(mid, pos=pos, end=end, label="move marker")
         self._markers_changed()
 
     def rename_marker(self, mid=None) -> None:
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
         if mid is None:
@@ -1857,14 +1925,14 @@ class MainWindow(QMainWindow, FilmCommands):
             self._rename(mid, name.strip())
 
     def _rename(self, mid: int, name: str) -> None:
-        d = self.doc
+        d = self.mdoc
         if d is None or d.marker(mid) is None:
             return
         d.update_marker(mid, name=name, label="rename marker")
         self._markers_changed()
 
     def delete_markers(self, ids=None) -> None:
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
         if ids is None:
@@ -1877,7 +1945,7 @@ class MainWindow(QMainWindow, FilmCommands):
             self._markers_changed()
 
     def delete_all_markers(self) -> None:
-        d = self.doc
+        d = self.mdoc
         if d and d.markers:
             d.remove_markers([m.id for m in d.markers], label="delete marker")
             self._markers_changed()
@@ -2025,7 +2093,12 @@ class MainWindow(QMainWindow, FilmCommands):
 
     # ── recording (0.4) ───────────────────────────────────────
     def record_toggle(self) -> None:
-        """The red button: open the Record window; there, Record; while recording, Stop."""
+        """The red button: open the Record window; there, Record; while recording, Stop. 3.0: in a project —
+        record onto the armed tracks."""
+        if self.proj is not None or self.mt_recording is not None:
+            self.mt_record_toggle()
+            self._update_transport()
+            return
         if self.rec_dlg is None:
             if self._busy():
                 return
@@ -2071,7 +2144,7 @@ class MainWindow(QMainWindow, FilmCommands):
             self.add_doc(d)
         else:
             d = info["doc"]
-            i = self.docs.index(d)
+            i = self.items.index(d)
             if self.tabs.currentIndex() != i:
                 self.tabs.setCurrentIndex(i)
             a, b = info["a"], info["b"]
@@ -2085,6 +2158,9 @@ class MainWindow(QMainWindow, FilmCommands):
 
     # ── transport ─────────────────────────────────────────────
     def play_toggle(self) -> None:
+        if self.mt_recording is not None:
+            self.mt_record_stop()
+            return
         if self.player.state == "play":
             self.stop_play()
         elif self.player.state == "pause":
@@ -2093,6 +2169,8 @@ class MainWindow(QMainWindow, FilmCommands):
             self.play()
 
     def play(self) -> None:
+        if self.proj is not None:
+            return self.mt_play()
         d = self.doc
         if d is None or d.frames <= 0 or self.job:
             return
@@ -2114,6 +2192,8 @@ class MainWindow(QMainWindow, FilmCommands):
         self._update_transport()
 
     def play_all(self) -> None:
+        if self.proj is not None:
+            return self.mt_play(True)
         d = self.doc
         if d is None or d.frames <= 0 or self.job:
             return
@@ -2128,12 +2208,21 @@ class MainWindow(QMainWindow, FilmCommands):
         self._update_transport()
 
     def stop_play(self) -> None:
+        if self.mt_recording is not None:
+            self.mt_record_stop()
+            return
         if self.player.state == "stop":
             return
         d = self.player.doc
         pos = self.player.position()
         origin = self.player.origin
         self.player.stop()
+        p = next((x for x in self.projects if self.mt_engine(x) is d), None)
+        if p is not None:                            # 3.0: a project stopped
+            self.mt_stopped(p, pos, origin)
+            self.meters.feed(None)
+            self._update_transport()
+            return
         if d is not None and d is self.doc:
             d.cursor = origin if self.cfg.get("return_cursor", True) else pos
         self.wave.set_play_pos(None)
@@ -2143,43 +2232,46 @@ class MainWindow(QMainWindow, FilmCommands):
 
     def _on_seek(self, frame: int) -> None:
         """A click in the wave while playing: go on from there."""
+        if self.proj is not None:
+            return self.mt_seek(frame)
         if self.player.state == "play" and self.player.doc is self.doc:
             d = self.doc
             end = d.sel[1] if d.sel and d.sel[0] <= frame < d.sel[1] else d.frames
             self.player.play(d, frame, end, self.a_loop.isChecked())
 
     def go_start(self) -> None:
-        d = self.doc
+        d = self.mdoc
         if d:
             self.stop_play()
             d.cursor = 0
-            self.wave.ensure_visible(0)
+            self.pview().ensure_visible(0)
             self._on_selection()
-            self.wave.update()
+            self.pview().update()
 
     def go_end(self) -> None:
-        d = self.doc
+        d = self.mdoc
         if d:
             self.stop_play()
             d.cursor = d.frames
-            self.wave.ensure_visible(d.frames)
+            self.pview().ensure_visible(d.frames)
             self._on_selection()
-            self.wave.update()
+            self.pview().update()
 
     def nudge(self, direction: int) -> None:
         """← / →: the cursor a tenth of the view (while playing: 5 seconds)."""
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
-        if self.player.state == "play" and self.player.doc is d:
+        if self.playing_this(d):
             pos = self.player.position() + direction * 5 * d.rate
             self._on_seek(int(max(0, min(d.frames - 1, pos))))
             return
-        a, b = self.wave.visible()
+        view = self.pview()
+        a, b = view.visible()
         d.cursor = int(max(0, min(d.frames, d.cursor + direction * max(1, (b - a) / 10))))
-        self.wave.ensure_visible(d.cursor)
+        view.ensure_visible(d.cursor)
         self._on_selection()
-        self.wave.update()
+        view.update()
 
     def _toggle_loop(self) -> None:
         on = not self.cfg.get("loop", False)
@@ -2192,6 +2284,13 @@ class MainWindow(QMainWindow, FilmCommands):
         self.cfg["follow"] = self.a_follow.isChecked()
 
     def _tick(self) -> None:
+        if self.proj is not None:                   # 3.0: a project's play cursor and meters
+            self.mt_tick()
+            if self.player.state == "play" and self.player.done and self.mt_recording is None:
+                self.stop_play()
+            elif self.player.state != "play" and self.meters.level.max() > self.meters.FLOOR:
+                self.meters.feed(None)
+            return
         p = self.player
         if p.state == "play":
             if p.done:
@@ -2209,6 +2308,10 @@ class MainWindow(QMainWindow, FilmCommands):
 
     # ── keeping the widgets in step ───────────────────────────
     def _on_selection(self) -> None:
+        if self.proj is not None:
+            self.mt_view.timeline.update()
+            self.mt_cursor_moved()
+            return
         d = self.doc
         self._hbar_sync()
         self.overview.update()
@@ -2239,7 +2342,7 @@ class MainWindow(QMainWindow, FilmCommands):
         self._update_actions()
 
     def _on_time_edit(self, key: str, e: QLineEdit) -> None:
-        d = self.doc
+        d = self.mdoc
         if d is None:
             return
         v = parse_time(e.text(), d.rate)
@@ -2261,8 +2364,8 @@ class MainWindow(QMainWindow, FilmCommands):
         d.sel = (a, b) if b > a else None
         if d.sel:
             d.cursor = a
-        self.wave.ensure_visible(a)
-        self.wave.update()
+        self.pview().ensure_visible(a)
+        self.pview().update()
         self._on_selection()
 
     def _on_view(self) -> None:
@@ -2341,15 +2444,16 @@ class MainWindow(QMainWindow, FilmCommands):
             self.tb[key].setEnabled(has and not busy)
         self.tb["undo"].setToolTip(keys.tip(self.a_undo))
         self.tb["redo"].setToolTip(keys.tip(self.a_redo))
+        self.mt_update_actions()                     # 3.0: what a project tab can do
         self._title()
 
     def _update_transport(self) -> None:
         st = self.player.state
         self.t_play.setIcon(style.icon("fa6s.stop" if st == "play" else "fa6s.play", "#ffffff"))
-        has = self.doc is not None
+        has = self.mdoc is not None
         for b in (self.t_start, self.t_rew, self.t_play, self.t_pause, self.t_stop, self.t_ff, self.t_end):
             b.setEnabled(has)
-        rec = self.rec_dlg is not None and self.rec_dlg.recording()
+        rec = (self.rec_dlg is not None and self.rec_dlg.recording()) or self.mt_recording is not None
         self.t_rec.setIcon(style.icon("fa6s.square" if rec else "fa6s.circle", "#e5484d"))
         self.t_rec.setToolTip(keys.tip(self.a_record, t("rec_stop_tip")) if rec else
                               keys.tip(self.a_record))
@@ -2357,7 +2461,9 @@ class MainWindow(QMainWindow, FilmCommands):
 
     def _update_all(self) -> None:
         d = self.doc
-        if d is None:
+        if self.proj is not None:
+            self._mt_fields()
+        elif d is None:
             self.fmt_label.setText("")
             self.fmt_label.hide()
         else:
@@ -2606,8 +2712,15 @@ class MainWindow(QMainWindow, FilmCommands):
             while self.job and time.monotonic() - t0 < 5:
                 QApplication.processEvents()
                 time.sleep(0.02)
-        for i in range(len(self.docs) - 1, -1, -1):
-            d = self.docs[i]
+        if self.mt_recording is not None:
+            self.mt_record_stop()
+        for i in range(len(self.items) - 1, -1, -1):
+            d = self.items[i]
+            if isinstance(d, Project):
+                if d.dirty and not self._mt_ask_save(d, i):
+                    ev.ignore()
+                    return
+                continue
             if d.dirty and not self._ask_save(d, i):
                 ev.ignore()
                 return
@@ -2630,6 +2743,16 @@ class MainWindow(QMainWindow, FilmCommands):
         for d in self.docs:
             d.close()
         self.docs.clear()
+        self._mt_close_rec()
+        for p in self.projects:                      # 3.0
+            eng = self.mt_engines.pop(id(p), None)
+            if eng is not None:
+                eng.close()
+            projfile.remove_journal(p)
+            for m in p.media.values():
+                m.close()
+        self.projects.clear()
+        self.items.clear()
         if self._installer:
             from . import updater
             winint.release_mutex()

@@ -64,7 +64,7 @@ def test_empty_window(qapp, session, data_dir):
     assert w.doc is None and not w.tabs.isVisible()
     assert not w.a_save.isEnabled() and not w.a_cut.isEnabled() and not w.tb["normalize"].isEnabled()
     menus = [a.text() for a in w.menuBar().actions()]
-    assert menus == ["ArtCore Sound", "Файл", "Правка", "Метки", "Вид", "Обработка", "Эффекты", "Реставрация", "Фильм",
+    assert menus == ["ArtCore Sound", "Файл", "Правка", "Мультитрек", "Метки", "Вид", "Обработка", "Эффекты", "Реставрация", "Фильм",
                      "Инструменты", "Макросы", "Воспроизведение"]
     assert "Справка" not in menus
     img = w.grab().toImage()
@@ -323,7 +323,7 @@ def test_light_theme_and_english(qapp, session, data_dir, media_dir):
     i18n.set_lang("en")
     try:
         w = _win(qapp, session)
-        assert [a.text() for a in w.menuBar().actions()] == ["ArtCore Sound", "File", "Edit", "Markers", "View",
+        assert [a.text() for a in w.menuBar().actions()] == ["ArtCore Sound", "File", "Edit", "Multitrack", "Markers", "View",
                                                               "Process", "Effects", "Restoration", "Film", "Tools", "Macros",
                                                               "Transport"]
         _open(qapp, w, os.path.join(media_dir, "stereo16.wav"))
@@ -412,7 +412,7 @@ def test_status_bar_shows_clipping(qapp, session, data_dir, loud_dir):
 
 def test_statistics_dialog(qapp, session, data_dir, loud_dir):
     w = _win(qapp, session)
-    assert [a.text() for a in w.menuBar().actions()][9] == "Инструменты"
+    assert [a.text() for a in w.menuBar().actions()][10] == "Инструменты"
     _open(qapp, w, os.path.join(loud_dir, "dc_tone.wav"))
     assert w.a_stats.isEnabled() and w.a_stats.shortcut().toString() == "Ctrl+I"
     w.a_stats.trigger()

@@ -7,6 +7,13 @@ closing and the clean-up. 2.0: retime, a downmix, «Return to video» with a ste
 and a spectral erase. The result is a table (report.md) and the figures (report.json) in the report folder.
 
     python tools/stress_long.py <report folder> [--minutes 150] [--dts] [--heavy nr|reverb|declick|eq] [--keep]
+                                [--mt-tracks 8] [--mt-only] [--no-mt]
+
+3.0: then the multitrack check — a project as long as the film with 8 tracks (each a row of half-hour clips from a
+WAV read in place and a FLAC decoded into the cache, crossfaded), effects on half of them, a bus with a reverb fed by
+sends, envelopes: opening it, playing it live in blocks at several places (how long a block takes against its own
+length), a thousand edits and their undo, the crash journal, saving / opening, the mixdown of all of it to FLAC and
+two stems — with the memory of the process watched all along (it must not grow with the project's length).
 
 The film goes to <report folder>/film (made once, reused by later runs); the working files to the system's temp
 folder (ARTCORE_SOUND_TEMP changes that)."""
@@ -466,6 +473,190 @@ def run_20(d, rep, mem, sess, film: str) -> None:
         raise RuntimeError("the 2.0 steps left the film changed")
 
 
+def make_mt_sources(folder: str, minutes: float) -> tuple[str, str]:
+    """A WAV 24-bit stereo and a FLAC mono of `minutes` (the clips of the project's tracks come from these)."""
+    os.makedirs(folder, exist_ok=True)
+    from sound import ff as _ff
+    exe = _ff.ffmpeg() or "ffmpeg"
+    wav = os.path.join(folder, f"music_{minutes:g}min.wav")
+    flac = os.path.join(folder, f"voice_{minutes:g}min.flac")
+    d = minutes * 60
+    if not os.path.isfile(wav):
+        subprocess.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"aevalsrc='0.3*sin(2*PI*(220+40*sin(t/7))*t)|0.3*sin(2*PI*(330+30*sin(t/5))*t)':s=48000:d={d}",
+                        "-c:a", "pcm_s24le", wav + ".part.wav"], check=True)
+        os.replace(wav + ".part.wav", wav)
+    if not os.path.isfile(flac):
+        subprocess.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"anoisesrc=c=pink:r=44100:d={d}:a=0.2,volume='0.3+0.7*abs(sin(t/3))':eval=frame",
+                        "-c:a", "flac", flac + ".part.flac"], check=True)
+        os.replace(flac + ".part.flac", flac)
+    return wav, flac
+
+
+def run_mt(out: str, minutes: float, n_tracks: int, keep: bool) -> int:
+    """The multitrack check (3.0); its table goes after the film's in report.md (report_mt.json the figures)."""
+    from PySide6.QtWidgets import QApplication
+    from sound import VERSION, config, ff, store, style
+    from sound.i18n import set_lang
+    from sound.mt import engine, projfile, render
+    from sound.mt import media as M
+    from sound.mt.model import Project, Slot
+    set_lang("en")
+    app = QApplication.instance() or QApplication(sys.argv)
+    style.set_theme("dark")
+    os.makedirs(out, exist_ok=True)
+    clip_min = min(30.0, minutes)
+    src_dir = os.path.join(out, "mt_sources")
+    (wav, flac), sec = timed(make_mt_sources, src_dir, clip_min)
+    rep = Report()
+    mem = MemWatch()
+    root = config.work_root({})
+    sess = store.Session(root, clean=False)
+    cache = os.path.join(sess.path, "cache")                # a fresh cache: the decoding is measured
+    os.makedirs(cache)
+    rate = 48000
+    total = int(minutes * 60 * rate)
+    head = ["", f"## ArtCore Sound {VERSION} — the multitrack check", "",
+            f"- {n_tracks} tracks × {minutes / 60:.2f} h at {rate} Hz; clips of {clip_min:g} min from "
+            f"{os.path.basename(wav)} ({gb(os.path.getsize(wav))}, read in place) and {os.path.basename(flac)} "
+            f"({gb(os.path.getsize(flac))}, decoded into the cache); sources made in {sec:.0f} s"]
+    print("\n".join(head), flush=True)
+    rss0 = rss()
+    rep.add("mt", "memory before the project (RSS)", mb(rss0), "mt_rss_start", rss0)
+    proj_dir = os.path.join(sess.path, "Long")
+    os.makedirs(proj_dir)
+    p = Project(rate, 2, "Long", os.path.join(proj_dir, "Long.acproj"), proj_dir)
+    mem.reset()
+    mw = M.Media(M.new_media_id(), wav)
+    mf = M.Media(M.new_media_id(), flac)
+    _, sec = timed(M.load, mw, rate, cache)
+    rep.add("mt", "WAV 24-bit read in place: the peaks", f"{sec:.1f} s ({mw.frames / rate / sec:.0f}× real time)",
+            "mt_wav_peaks_s", round(sec, 2))
+    _, sec = timed(M.load, mf, rate, cache)
+    rep.add("mt", "FLAC 44.1 kHz → the cache at 48 kHz + peaks", f"{sec:.1f} s ({mf.frames / rate / sec:.0f}× "
+            f"real time), {gb(os.path.getsize(mf.cached))}", "mt_flac_cache_s", round(sec, 2))
+    _, sec = timed(M.load, mf, rate, cache)
+    rep.add("mt", "the same FLAC again: found in the cache", f"{sec:.2f} s", "mt_flac_again_s", round(sec, 2))
+    p.media[mw.id], p.media[mf.id] = mw, mf
+    bus = p.add_track("Reverb", "bus")
+    p.set_fx(bus.id, [Slot("reverb", {})])
+    seg = int(clip_min * 60 * rate)
+    xf = rate * 2
+    for i in range(n_tracks):
+        m = mw if i % 2 == 0 else mf
+        tr = p.add_track(f"T{i + 1}", "audio", m.channels)
+        pos, k = 0, 0
+        while pos < total:
+            n = min(seg - (k * 7919) % (rate * 60), total - pos)
+            off = (k * 7919 * 13 + i * rate * 17) % max(1, m.frames - n) if m.frames > n else 0
+            p.add_clip(tr.id, m.id, pos, n, off)
+            if pos + n >= total:
+                break
+            pos += n - xf
+            k += 1
+        if i % 2 == 1:
+            p.set_fx(tr.id, [Slot("eq", {}), Slot("comp", {})])
+        if i < 4:
+            p.set_send(tr.id, bus.id, db=-12)
+        p.set_envelope(tr.id, "vol", [(j * rate * 60, -6.0 * (j % 3)) for j in range(0, int(minutes), 5)])
+        p.set_track(tr.id, pan=((i % 5) - 2) / 3)
+    clips = sum(len(t.clips) for t in p.tracks)
+    rep.add("mt", "the project", f"{len(p.tracks)} tracks, {clips} clips, {p.frames / rate / 3600:.2f} h, "
+            f"{len(p.history)} undo steps", "mt_clips", clips)
+    rep.add("mt", "building it: peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()), "mt_build_rss",
+            mem.peak()[0])
+    # playing: live blocks of 1024 frames, a minute at five places
+    mem.reset()
+    eng = engine.Engine(p, live=True)
+    worst, times = 0.0, []
+    blocks = 0
+    rss_a, prv_a = rss(), private_bytes()
+    for where in (0.05, 0.3, 0.5, 0.75, 0.95):
+        pos = int(p.frames * where)
+        eng.seek(pos)
+        end = pos + 60 * rate
+        while pos < end:
+            t0 = time.perf_counter()
+            eng.read(pos, 1024)
+            dt = time.perf_counter() - t0
+            times.append(dt)
+            worst = max(worst, dt)
+            pos += 1024
+            blocks += 1
+    rss_b, prv_b = rss(), private_bytes()
+    eng.close()
+    block_s = 1024 / rate
+    times.sort()
+    p99 = times[int(len(times) * 0.99)]
+    avg = sum(times) / len(times)
+    rep.add("play", f"live mix, {blocks} blocks of 1024 frames ({block_s * 1000:.1f} ms each)",
+            f"average {avg * 1000:.2f} ms ({block_s / avg:.0f}× real time), 99 % ≤ {p99 * 1000:.2f} ms, "
+            f"worst {worst * 1000:.1f} ms", "mt_block_avg_ms", round(avg * 1000, 3))
+    rep.add("play", "blocks slower than real time", f"{sum(1 for x in times if x > block_s)} of {blocks} "
+            f"(the player keeps ~0.12 s ready)", "mt_blocks_late", sum(1 for x in times if x > block_s))
+    rep.add("play", "memory: before → after 5 minutes played, RSS / private", f"{mb(rss_a)} → {mb(rss_b)} / "
+            f"{mb(prv_a)} → {mb(prv_b)}", "mt_play_private_growth", prv_b - prv_a)
+    # editing and undo
+    mem.reset()
+    t1 = p.tracks[1]
+    ids = [c.id for c in t1.clips]
+
+    def edits():
+        for j in range(1000):
+            p.move_clips({ids[j % len(ids)]}, 100 if j % 2 == 0 else -100)
+        for _j in range(1000):
+            p.undo()
+    _, sec = timed(edits)
+    rep.add("edit", "1000 clip moves and 1000 undos", f"{sec:.2f} s, peak RSS {mb(mem.peak()[0])}",
+            "mt_edits_s", round(sec, 2))
+    p.journal_folder = sess.folder()
+    _, sec = timed(projfile.write_journal, p)
+    jsize = os.path.getsize(os.path.join(p.journal_folder, projfile.JOURNAL))
+    rep.add("edit", f"the crash journal ({len(p.history)} steps)", f"{sec:.2f} s, {mb(jsize)}", "mt_journal_s",
+            round(sec, 2))
+    _, sec = timed(projfile.save, p)
+    q, sec2 = timed(projfile.load, p.path)
+    _, sec3 = timed(projfile.load_media, q, cache)
+    ok = q.tracks == p.tracks
+    rep.add("edit", "save .acproj / open it / its media (all cached)", f"{sec:.2f} s / {sec2:.2f} s / {sec3:.1f} s, "
+            f"{'the same' if ok else 'DIFFERENT!'}", "mt_reopen_same", ok)
+    for m in q.media.values():
+        m.close()
+    # the mixdown
+    mem.reset()
+    out_mix = os.path.join(sess.path, "mix.flac")
+    _, sec = timed(render.mixdown, p, out_mix, "flac", "24")
+    info = ff.probe(out_mix)
+    rep.add("mix", "the whole project → FLAC 24", f"{sec:.0f} s ({p.frames / rate / sec:.1f}× real time), "
+            f"{gb(os.path.getsize(out_mix))}, {info.duration / 3600:.2f} h", "mt_mix_s", round(sec, 1))
+    rep.add("mix", "mixdown: peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()), "mt_mix_rss",
+            mem.peak()[0])
+    bad_len = abs(info.duration - p.frames / rate) > 1.0
+    os.remove(out_mix)
+    mem.reset()
+    stems, sec = timed(render.stems, p, os.path.join(sess.path, "stems"), "flac", "16",
+                       [p.tracks[1].id, p.tracks[2].id], 0, rate * 600)
+    rep.add("mix", "two stems of the first 10 minutes", f"{sec:.0f} s, peak RSS {mb(mem.peak()[0])}", "mt_stems_s",
+            round(sec, 1))
+    rss_end = rss()
+    rep.add("mt", "memory at the end (RSS)", mb(rss_end), "mt_rss_end", rss_end)
+    for m in p.media.values():
+        m.close()
+    mem.stop()
+    path = sess.path
+    sess.close()
+    md = rep.markdown(head)
+    with open(os.path.join(out, "report.md"), "a", encoding="utf-8") as f:
+        f.write(md)
+    with open(os.path.join(out, "report_mt.json"), "w", encoding="utf-8") as f:
+        json.dump(rep.data, f, indent=2)
+    if not keep:
+        shutil.rmtree(src_dir, ignore_errors=True)
+    print("\n" + md)
+    return 1 if (bad_len or not ok or os.path.isdir(path)) else 0
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):                 # a Windows console / CI pipe in cp1252: «→», «×»
         try:
@@ -478,8 +669,14 @@ def main() -> int:
     ap.add_argument("--dts", action="store_true")
     ap.add_argument("--heavy", default="nr", choices=("nr", "reverb", "declick", "eq", "comp"))
     ap.add_argument("--keep", action="store_true", help="keep the film for the next run")
+    ap.add_argument("--mt-tracks", type=int, default=8, help="3.0: the tracks of the multitrack check")
+    ap.add_argument("--mt-only", action="store_true", help="3.0: only the multitrack check")
+    ap.add_argument("--no-mt", action="store_true", help="3.0: no multitrack check")
     a = ap.parse_args()
-    return run(a.out, a.minutes, a.dts, a.heavy, a.keep)
+    rc = 0 if a.mt_only else run(a.out, a.minutes, a.dts, a.heavy, a.keep)
+    if not a.no_mt:
+        rc = max(rc, run_mt(a.out, a.minutes, a.mt_tracks, a.keep))
+    return rc
 
 
 if __name__ == "__main__":

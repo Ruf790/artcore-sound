@@ -1,6 +1,6 @@
 # Builds ArtCoreSound.exe + Setup.exe on Windows; runs the tests on Linux (ffmpeg, offscreen Qt, no sound card).
 # Every push / PR: artifacts on the run page (Actions → run → Artifacts).
-# The long-film check (tools/stress_long.py, ~2.5 h 5.1) runs only by hand: Actions → Build → Run workflow →
+# The long-film check (tools/stress_long.py, ~2.5 h 5.1, and 3.0's 8-track project as long) runs only by hand: Actions → Build → Run workflow →
 # «stress» on; its report is in the run's artifacts and summary.
 # Publishing a release (Releases → Draft a new release → tag 0.1.0 → Publish):
 # the installer and a portable zip are built and attached to that release.
@@ -166,6 +166,7 @@ jobs:
           --collect-all pedalboard
           --hidden-import pedalboard_native
           --collect-submodules comtypes
+          --collect-submodules sound.mt
           --exclude-module PySide6.QtQml
           --exclude-module PySide6.QtQuick
           --exclude-module PySide6.QtQuickWidgets
@@ -254,6 +255,7 @@ jobs:
 
   stress:
     # by hand only (Run workflow → stress): a ~2.5 h 5.1 film opened, drawn, edited, analysed, processed and saved
+    # 3.0: then a multitrack project as long with 8 tracks: played live, edited, saved, mixed down (its own table)
     if: github.event_name == 'workflow_dispatch' && inputs.stress
     runs-on: ${{ inputs.stress_os || 'windows-latest' }}
     timeout-minutes: 240

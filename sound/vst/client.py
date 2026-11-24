@@ -210,3 +210,98 @@ class Host:
             self.kill()
         except Exception:                               # noqa: BLE001
             pass
+
+
+class SharedHost:
+    """3.0: one host process for every plug-in of a multitrack chain (a track): slot() gives each plug-in its own
+    handle (Slot — the same calls as a Host). A plug-in that crashes takes this track's host down, never the
+    program or the other tracks; the next slot() starts a new host."""
+
+    def __init__(self):
+        self.host: Host | None = None
+        self._n = 0
+        self._lock = threading.Lock()
+
+    def slot(self) -> "Slot":
+        with self._lock:
+            if self.host is None or self.host.dead:
+                if self.host is not None:
+                    self.host.kill()
+                self.host = Host()
+            self._n += 1
+            return Slot(self.host, self._n)
+
+    def close(self) -> None:
+        with self._lock:
+            if self.host is not None:
+                self.host.close()
+                self.host = None
+
+
+class Slot:
+    """A plug-in in a shared host: what Host offers one plug-in, through the host's «at» command."""
+
+    def __init__(self, host: Host, sid: int):
+        self.h, self.sid = host, sid
+        self.shm = None
+        self.frames = 0
+        self.ch = 0
+        self.latency = 0
+        self.info: dict = {}
+        self._closed = False
+
+    @property
+    def dead(self) -> str:
+        return "closed" if self._closed else self.h.dead
+
+    def call(self, *cmd, timeout: float = T_CMD):
+        if self._closed:
+            raise PluginError("crashed", "closed")
+        return self.h.call("at", self.sid, cmd, timeout=timeout)
+
+    def load(self, path: str, name: str, rate: int, channels: int, mode: str = "auto",
+             use: list[int] | None = None) -> dict:
+        from multiprocessing import shared_memory
+        self.ch = int(channels)
+        self.frames = FRAMES
+        self.shm = shared_memory.SharedMemory(create=True, size=self.frames * self.ch * 8)
+        self._in = np.ndarray((self.frames, self.ch), np.float32, self.shm.buf[:self.frames * self.ch * 4])
+        self._out = np.ndarray((self.frames, self.ch), np.float32,
+                               self.shm.buf[self.frames * self.ch * 4:self.frames * self.ch * 8])
+        self.info = self.call("load", {"path": path, "name": name, "rate": int(rate), "channels": self.ch,
+                                       "mode": mode, "use": list(use) if use is not None else None,
+                                       "frames": self.frames, "shm": self.shm.name}, timeout=T_LOAD)
+        self.latency = int(self.info["latency"])
+        return self.info
+
+    process = Host.process
+    set = Host.set
+    param = Host.param
+    reset = Host.reset
+    get = Host.get
+    editor = Host.editor
+    preset_load = Host.preset_load
+    preset_data = Host.preset_data
+
+    def close(self) -> None:
+        if not self._closed and not self.h.dead:
+            try:
+                self.call("unload", timeout=5.0)
+            except PluginError:
+                pass
+        self._closed = True
+        self._free()
+
+    def kill(self) -> None:
+        self._closed = True
+        self._free()
+
+    def _free(self) -> None:
+        shm, self.shm = self.shm, None
+        if shm is not None:
+            self._in = self._out = None
+            try:
+                shm.close()
+                shm.unlink()
+            except (OSError, BufferError):
+                pass
