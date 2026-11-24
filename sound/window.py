@@ -364,6 +364,10 @@ class MainWindow(QMainWindow, FilmCommands):
                    ("dehum", "fa6s.plug-circle-xmark"), ("deess", "fa6s.wind"))
         for key, icon in effects + (("menu", None),) + restore:
             if key == "menu":
+                m.addSeparator()                       # 2.0: the VST3 plugins, filled when it opens
+                self.vst_menu = m.addMenu(style.icon("fa6s.plug"), t("vst_menu"))
+                self.vst_menu.aboutToShow.connect(self._fill_vst_menu)
+                self._fill_vst_menu()
                 m = mb.addMenu(t("m_restore"))
                 self.restore_menu = m
                 continue
@@ -1305,6 +1309,31 @@ class MainWindow(QMainWindow, FilmCommands):
             return
         self.apply_effect(key, dlg.result_values(), dlg.keep_tail_on(), (a, b))
 
+    # ── VST3 plugins (2.0) ────────────────────────────────────
+    def _fill_vst_menu(self) -> None:
+        from . import vstui
+        vstui.fill_menu(self, self.vst_menu)
+
+    def vst_dialog(self, plugin) -> None:
+        """A VST3 plugin's window over the selection (or the whole file), as any effect."""
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0:
+            return
+        from . import fxui, vstui
+        self.stop_play()
+        vstui.remember(self.cfg, plugin)
+        config.save(self.cfg)
+        a, b = self._range(d)
+        dlg = fxui.EffectDialog(self, "vst3", d, a, b, not d.sel, plugin=plugin.ref())
+        self.fx_dlg = dlg
+        ok = dlg.exec()
+        self.fx_dlg = None
+        if ok:
+            self.apply_effect("vst3", dlg.result_values(), dlg.keep_tail_on(), (a, b))
+
+    def vst_scan(self) -> None:
+        self.settings_dialog(page="vst3", scan=True)
+
     def apply_effect(self, key: str, values: dict, keep_tail: bool = False, rng=None) -> None:
         from . import fx
         d = self._edit_doc()
@@ -2197,9 +2226,11 @@ class MainWindow(QMainWindow, FilmCommands):
         self.stats_dlg.refresh()
 
     # ── settings, about, updates ──────────────────────────────
-    def settings_dialog(self) -> None:
+    def settings_dialog(self, page: str = "", scan: bool = False) -> None:
         from .dialogs import SettingsDialog
-        dlg = SettingsDialog(self.cfg, self)
+        dlg = SettingsDialog(self.cfg, self, page=page)
+        if scan:
+            dlg.vst.start_scan(False)
         before = (self.cfg.get("language"), self.cfg.get("theme"), self.cfg.get("look"))
         if dlg.exec():
             dlg.apply()

@@ -37,7 +37,7 @@ NOISE_EXT = ".acnoise"
 # ── the steps ─────────────────────────────────────────────────
 PROCESS_STEPS = ("gain", "normalize", "dc", "trim_silence", "fades", "channels", "rate")
 FX_STEPS = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick", "chmatrix", "dialog",
-            "nr_auto", "decrackle", "declip", "dehum", "deess")
+            "nr_auto", "decrackle", "declip", "dehum", "deess", "vst3")
 STEP_KINDS = PROCESS_STEPS + FX_STEPS
 STEP_TITLES = {"gain": "p_gain", "normalize": "p_normalize", "dc": "p_dc", "trim_silence": "p_trim_silence",
                "fades": "bs_fades", "channels": "p_channels", "rate": "p_resample"}
@@ -90,6 +90,9 @@ def step_params(kind: str) -> list:
 
 
 def step_defaults(kind: str) -> dict:
+    if kind == "vst3":                              # 2.0: which plugin, its state, the channels
+        from . import fx
+        return {**fx.get("vst3").defaults(), "keep_tail": True}
     v = {p.key: p.default for p in step_params(kind)}
     if kind == "nr":
         v["profile"] = ""
@@ -100,6 +103,9 @@ def step_defaults(kind: str) -> dict:
 
 def clean_values(kind: str, values: dict | None) -> dict:
     values = values or {}
+    if kind == "vst3":
+        from . import fx
+        return {**fx.get("vst3").clean(values), "keep_tail": bool(values.get("keep_tail", True))}
     out = {p.key: p.clean(values.get(p.key, p.default)) for p in step_params(kind)}
     if kind == "nr":
         out["profile"] = str(values.get("profile") or "")
@@ -121,6 +127,8 @@ class Step:
 
     def title(self) -> str:
         from .i18n import t
+        if self.kind == "vst3":
+            return "VST3: " + (self.values["plugin"].get("name") or "?")
         if self.kind in FX_STEPS:
             from . import fx
             return t(fx.get(self.kind).name)
@@ -151,6 +159,11 @@ class Step:
         if k == "tempo":
             from . import fx
             return fx.get(k).label(v)
+        if k == "vst3":
+            parts = [v["plugin"].get("maker", "")]
+            if v["mode"] != "auto":
+                parts.append(t("vst_mode_" + v["mode"]))
+            return ", ".join(x for x in parts if x)
         return ""
 
     def to_dict(self) -> dict:
@@ -548,7 +561,7 @@ def apply_step(d, step: Step, progress, notes: list | None = None, profiles: dic
             d.replace(0, n, proc.convert_document(d, rate, d.channels, d.layout, progress), "rate", rate=rate)
     else:
         eff = fx.get(k)
-        values = {p.key: v[p.key] for p in eff.params}
+        values = eff.clean(v) if k == "vst3" else {p.key: v[p.key] for p in eff.params}
         if k == "nr":
             path = v.get("profile") or ""
             if not path:

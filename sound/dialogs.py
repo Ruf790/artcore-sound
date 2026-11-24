@@ -229,15 +229,27 @@ RATES = (8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 1
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, cfg: dict, parent=None):
+    def __init__(self, cfg: dict, parent=None, page: str = ""):
+        """page "vst3" (2.0): opens on the VST3 plugins."""
         super().__init__(parent)
+        from PySide6.QtWidgets import QTabWidget, QWidget
         from . import player
+        from .vstui import Vst3Page
         self.cfg = cfg
         self.setWindowTitle(t("set_title"))
         self.setMinimumWidth(560)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 14)
-        lay.addWidget(_head(t("set_title")))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 16, 20, 14)
+        outer.addWidget(_head(t("set_title")))
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs, 1)
+        general = QWidget()
+        lay = QVBoxLayout(general)
+        self.tabs.addTab(general, t("set_general"))
+        self.vst = Vst3Page(cfg, self)
+        self.tabs.addTab(self.vst, "VST3")
+        if page == "vst3":
+            self.tabs.setCurrentWidget(self.vst)
         form = QFormLayout()
         form.setHorizontalSpacing(14)
         self.lang = QComboBox()
@@ -286,7 +298,8 @@ class SettingsDialog(QDialog):
         self.upd = QCheckBox(t("set_updates"))
         self.upd.setChecked(cfg.get("check_updates", True))
         lay.addWidget(self.upd)
-        lay.addWidget(_buttons(self))
+        lay.addStretch(1)
+        outer.addWidget(_buttons(self))
 
     def _browse(self) -> None:
         p = QFileDialog.getExistingDirectory(self, t("set_temp"), self.temp.text())
@@ -298,6 +311,7 @@ class SettingsDialog(QDialog):
                         device=self.device.currentData() or "", latency=self.latency.currentData(),
                         temp_dir=self.temp.text().strip(), return_cursor=self.ret.isChecked(),
                         check_updates=self.upd.isChecked())
+        self.vst.apply()
 
 
 class UpdateDialog(QDialog):

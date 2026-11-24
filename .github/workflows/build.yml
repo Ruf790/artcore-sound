@@ -50,6 +50,12 @@ jobs:
             libxcb-keysyms1 libxcb-image0 libxcb-render-util0 libxcb-xinerama0 libegl1
       - name: Python packages
         run: python -m pip install -r requirements.txt pytest
+      - name: The test VST3 plugin (tools/testplug, built from the VST3 SDK)
+        run: |
+          git clone -q --depth 1 https://github.com/steinbergmedia/vst3sdk ../vst3sdk
+          git -C ../vst3sdk submodule update -q --init --depth 1 base pluginterfaces public.sdk cmake
+          cmake -S tools/testplug -B build/testplug -DCMAKE_BUILD_TYPE=Release -DVST3_SDK="$PWD/../vst3sdk"
+          cmake --build build/testplug --config Release -j 4
       - name: A small disk for the disk-full test (8 MB tmpfs)
         run: |
           sudo mkdir -p /mnt/small
@@ -110,6 +116,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller pillow
 
+      - name: The test VST3 plugin (tools/testplug, built from the VST3 SDK)
+        shell: pwsh
+        run: |
+          git clone -q --depth 1 https://github.com/steinbergmedia/vst3sdk ../vst3sdk
+          git -C ../vst3sdk submodule update -q --init --depth 1 base pluginterfaces public.sdk cmake
+          cmake -S tools/testplug -B build/testplug -DVST3_SDK="$PWD/../vst3sdk"
+          cmake --build build/testplug --config Release -j 4
+          if (-not (Test-Path build/testplug/VST3/Release/ArtCoreTestPlug.vst3)) { Write-Error "no test plugin"; exit 1 }
+
       - name: Download FFmpeg
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -124,6 +139,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           ARTCORE_FFMPEG_DIR: ffmpeg/bin
+          ARTCORE_TESTPLUG: ${{ github.workspace }}\build\testplug\VST3\Release\ArtCoreTestPlug.vst3
         shell: pwsh
         run: |
           python run.py --selftest
@@ -147,6 +163,8 @@ jobs:
           --hidden-import sounddevice
           --add-binary "libmpv/libmpv-2.dll;."
           --hidden-import mpv
+          --collect-all pedalboard
+          --hidden-import pedalboard_native
           --exclude-module PySide6.QtQml
           --exclude-module PySide6.QtQuick
           --exclude-module PySide6.QtQuickWidgets
@@ -191,6 +209,8 @@ jobs:
 
       - name: Self-test the built exe
         shell: pwsh
+        env:
+          ARTCORE_TESTPLUG: ${{ github.workspace }}\build\testplug\VST3\Release\ArtCoreTestPlug.vst3
         run: |
           Remove-Item "$env:TEMP\artcore_sound_selftest.txt" -ErrorAction SilentlyContinue
           Remove-Item -Recurse "$env:TEMP\artcore_sound_selftest" -ErrorAction SilentlyContinue

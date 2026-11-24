@@ -23,6 +23,8 @@ python -m PyInstaller --noconfirm --clean --windowed ^
   --hidden-import sounddevice ^
   --add-binary "libmpv\libmpv-2.dll;." ^
   --hidden-import mpv ^
+  --collect-all pedalboard ^
+  --hidden-import pedalboard_native ^
   --exclude-module PySide6.QtQml ^
   --exclude-module PySide6.QtQuick ^
   --exclude-module PySide6.QtQuickWidgets ^

@@ -499,14 +499,24 @@ class EffectDialog(QDialog):
     scanned = Signal(object, int)                      # clicks found (frames) or the clipping scan (a dict), run
     detected = Signal(object, int)                     # 2.0: the hum found (a dict), run
 
-    def __init__(self, win, key: str, d, a: int, b: int, whole: bool, batch: dict | None = None):
+    def __init__(self, win, key: str, d, a: int, b: int, whole: bool, batch: dict | None = None,
+                 plugin: dict | None = None):
         """batch (1.0): the dialog edits a step of a batch — {"values": …, "file": the name of the file previewed
-        (d is its first seconds; an empty d: no preview)}; Apply becomes OK and nothing is applied."""
+        (d is its first seconds; an empty d: no preview)}; Apply becomes OK and nothing is applied.
+        plugin (2.0, key "vst3"): the VST3 plugin opened ({path, name, id, maker}); its presets and last values
+        are its own (pkey "vst3:<id>")."""
         super().__init__(win)
         self.win, self.key, self.d, self.a, self.b, self.whole = win, key, d, a, b, whole
         self.batch = batch
         self.eff = fx.get(key)
+        self.vst = None                                 # vstui.VstBody of a VST3 plugin
         cfg = win.cfg
+        if key == "vst3":
+            ref = dict(plugin or (batch or {}).get("values", {}).get("plugin") or {})
+            self.pkey = "vst3:" + (ref.get("id") or ref.get("path", "") + "|" + ref.get("name", ""))
+        else:
+            ref = None
+            self.pkey = key
         if batch is not None:
             last = dict(batch.get("values") or {})
             self.profile_path = str(last.get("profile") or "")
@@ -516,7 +526,9 @@ class EffectDialog(QDialog):
                 self.eff.profile = None
                 self._load_profile(self.profile_path)
         else:
-            last = (cfg.get("fx_last") or {}).get(key) or {}
+            last = (cfg.get("fx_last") or {}).get(self.pkey) or {}
+        if ref is not None:
+            last = {**last, "plugin": ref}
         self.values = self.eff.clean({**self.eff.defaults(), **last})
         self.rows: dict = {}
         self.chain = None                               # the PreviewChain while previewing in real time
@@ -525,13 +537,14 @@ class EffectDialog(QDialog):
         self.graph = self.comp_graph = self.gr = self.noise_graph = None
         self.marks: list = []
         self._scan_run = 0
-        self.setWindowTitle(t(self.eff.name))
+        title = self.eff.label(self.values) if key == "vst3" else t(self.eff.name)
+        self.setWindowTitle(title)
         self.setMinimumWidth({"eq": 980, "geq": 760, "comp": 940, "limit": 800, "nr": 760, "deess": 800,
                               "declip": 760}.get(key, 700))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(8)
-        head = QLabel(t(self.eff.name))
+        head = QLabel(title)
         head.setStyleSheet("font-size: 13pt; font-weight: 700; padding-bottom: 2px;")
         lay.addWidget(head)
         if batch is not None:
@@ -620,6 +633,11 @@ class EffectDialog(QDialog):
         v = QVBoxLayout(body)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
+        if k == "vst3":
+            from .vstui import VstBody
+            self.vst = VstBody(self)
+            v.addWidget(self.vst, 1)
+            return
         if k == "eq":
             self.graph = EqGraph(self.eff, self.d.rate, "eq")
             self.graph.moved.connect(self._eq_moved)
@@ -804,7 +822,7 @@ class EffectDialog(QDialog):
         return h
 
     def _user_presets(self) -> dict:
-        return (self.win.cfg.get("fx_presets") or {}).get(self.key) or {}
+        return (self.win.cfg.get("fx_presets") or {}).get(self.pkey) or {}
 
     def _fill_presets(self, select: str | None = None) -> None:
         c = self.presets
@@ -839,6 +857,8 @@ class EffectDialog(QDialog):
             base = self._user_presets().get(name, {})
         else:
             base = {}
+        if self.key == "vst3":                          # a preset of this plugin: the plugin stays
+            base = {**base, "plugin": self.values["plugin"]}
         return self.eff.clean({**self.eff.defaults(), **base})
 
     def _preset_chosen(self, _i: int) -> None:
@@ -855,7 +875,7 @@ class EffectDialog(QDialog):
 
     def save_preset(self, name: str) -> None:
         cfg = self.win.cfg
-        cfg.setdefault("fx_presets", {}).setdefault(self.key, {})[name] = dict(self.values)
+        cfg.setdefault("fx_presets", {}).setdefault(self.pkey, {})[name] = dict(self.values)
         config.save(cfg)
         self._fill_presets(name)
 
@@ -863,7 +883,7 @@ class EffectDialog(QDialog):
         data = self.presets.currentData()
         if data and data.startswith("user:"):
             cfg = self.win.cfg
-            cfg.get("fx_presets", {}).get(self.key, {}).pop(data.partition(":")[2], None)
+            cfg.get("fx_presets", {}).get(self.pkey, {}).pop(data.partition(":")[2], None)
             config.save(cfg)
             self._fill_presets()
 
@@ -872,6 +892,8 @@ class EffectDialog(QDialog):
         self.values = self.eff.clean(values)
         for k, w in self.rows.items():
             self._show(k, w, self.values[k])
+        if self.vst is not None:
+            self.vst.values_set()
         self._sync()
         self._push()
 
@@ -978,7 +1000,17 @@ class EffectDialog(QDialog):
         w = self.win
         w.stop_play()
         if self.eff.realtime:
-            self.chain = fx.PreviewChain(self.eff, self.d.rate, self.d.labels, self.values)
+            try:
+                self.chain = fx.PreviewChain(self.eff, self.d.rate, self.d.labels, self.values)
+            except Exception as e:                       # noqa: BLE001 — 2.0: a plugin that will not load
+                self.chain = None
+                self.status.setText(t("fx_failed", str(e) or type(e).__name__))
+                self.b_preview.blockSignals(True)
+                self.b_preview.setChecked(False)
+                self.b_preview.blockSignals(False)
+                self.b_preview.setIcon(style.icon("fa6s.play"))
+                self.b_preview.setText(t("fx_preview"))
+                return
             self.chain.set_bypass(self.b_bypass.isChecked())
             w.player.play(self.d, self.a, self.b, loop=True, fx=self.chain)
             w._update_transport()
@@ -1051,6 +1083,8 @@ class EffectDialog(QDialog):
                 self.status.setText(t("fx_preparing", int(rp.frac * 100)))
         if self.chain is not None and self.chain.error:
             self.status.setText(t("fx_failed", self.chain.error))
+        if self.vst is not None:
+            self.vst.tick()
         if self.key in ("declick", "declip") and not self.b_find.isEnabled():
             self.found.setText(t("dc_searching" if self.key == "declick" else "cl_searching",
                                  int(getattr(self, "_scan_frac", 0.0) * 100)))
@@ -1172,8 +1206,10 @@ class EffectDialog(QDialog):
         self.stop_preview()
         if r and self.batch is None:
             cfg = self.win.cfg
-            cfg.setdefault("fx_last", {})[self.key] = dict(self.values)
+            cfg.setdefault("fx_last", {})[self.pkey] = dict(self.values)
             if self.keep_tail is not None:
                 cfg["fx_keep_tail"] = self.keep_tail.isChecked()
             config.save(cfg)
+        if self.vst is not None:
+            self.vst.close()
         super().done(r)

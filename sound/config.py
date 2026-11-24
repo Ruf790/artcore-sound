@@ -32,7 +32,10 @@ DEFAULTS = {
     "save_opts":     {},            # format → {"bits": "24", "bitrate": 320, …}
     # effects (0.3)
     "fx_last":       {},            # effect key → the values last applied
-    "fx_presets":    {},            # effect key → {name: values} (the user's own presets)
+    "fx_presets":    {},            # effect key → {name: values} (the user's own presets; "vst3:<id>" a plugin's)
+    "vst3_folders":  [],            # 2.0: where the VST3 plugins are looked for ([] — the standard folders)
+    "vst3_recent":   [],            # the plugins last opened (their keys), first in the menu
+    "vst_preset_dir": "",           # the folder of the .vstpreset files last opened or saved
     "fx_keep_tail":  True,          # delay / reverb: ring on past the selection
     # analysis, markers, recording (0.4)
     "view_mode":     "wave",        # wave | spec | both
@@ -140,9 +143,12 @@ def load() -> dict:
     cfg["fx_keep_tail"] = bool(cfg.get("fx_keep_tail"))
     for k in ("loop", "follow", "return_cursor", "check_updates"):
         cfg[k] = bool(cfg.get(k))
-    for k in ("device", "temp_dir", "last_dir", "save_dir", "save_format"):
+    for k in ("device", "temp_dir", "last_dir", "save_dir", "save_format", "vst_preset_dir"):
         if not isinstance(cfg.get(k), str):
             cfg[k] = DEFAULTS[k]
+    for k in ("vst3_folders", "vst3_recent"):          # 2.0
+        v = cfg.get(k)
+        cfg[k] = [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
     return cfg
 
 

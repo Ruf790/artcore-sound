@@ -56,7 +56,8 @@ def selftest() -> int:
     by an edit, a recording through the null input, and a WASAPI input stream opened (or a clear word that there is
     no input device). 1.0: a batch of 3 files in worker processes of the exe, a long Cyrillic path, the crash
     journal, the error report. 2.0: the listening volume (−12 dB heard, the meters unchanged, the file untouched); the film tools (return to
-    video with E-AC-3 / DTS, the automatic sync, Pro Logic II, libmpv)."""
+    video with E-AC-3 / DTS, the automatic sync, Pro Logic II, libmpv); restoration; VST3 through the exe's own plugin
+    host (pedalboard)."""
     import tempfile
     import time
     import traceback
@@ -477,6 +478,61 @@ def _selftest_20(src, session, tmp: str, lines: list) -> None:
         raise RuntimeError("the input monitor's volume")
     _selftest_film(session, tmp, lines)
     _selftest_restore(session, tmp, lines)
+    _selftest_vst3(session, tmp, lines)
+
+
+def _selftest_vst3(session, tmp: str, lines: list) -> None:
+    """2.0 block 3: pedalboard inside the exe; with ARTCORE_TESTPLUG (CI builds tools/testplug) the plugin host is the
+    exe itself: a scan, 5.1 in pairs with +6 dB, the plugin's latency made up for, a plugin that crashes — the
+    program goes on and the document stays."""
+    import shutil
+    import time
+
+    import numpy as np
+
+    from . import fx, store
+    from .doc import Document
+    from .vst import client, scan
+    try:
+        import pedalboard
+    except ImportError as e:
+        raise RuntimeError(f"pedalboard is missing: {e}") from None
+    lines.append(f"pedalboard {pedalboard.__version__}")
+    plug = os.environ.get("ARTCORE_TESTPLUG", "")
+    if not plug or not os.path.exists(plug):
+        lines.append("VST3: no test plugin (ARTCORE_TESTPLUG) — the host not checked")
+        return
+    folder = os.path.join(tmp, "vst3")
+    shutil.rmtree(folder, ignore_errors=True)
+    shutil.copytree(plug, os.path.join(folder, os.path.basename(plug)))
+    lib = scan.Library({"vst3_folders": [folder]})
+    n, bad = lib.scan(force=True)
+    names = sorted(p.name for p in lib.plugins())
+    lines.append(f"VST3 scan: {n} plugins, {bad} not loaded: {names}")
+    if n != 2 or bad:
+        raise RuntimeError("the VST3 scan")
+    p = next(p for p in lib.plugins() if p.name == "ArtCore Test Plug Latency")
+    rate = 48000
+    x = (np.random.default_rng(3).standard_normal((3 * rate, 6)) * 0.1).astype(np.float32)
+    d = Document(rate=rate, channels=6, folder=session.folder(), labels=("L", "R", "C", "LFE", "Ls", "Rs"),
+                 layout="5.1")
+    d.set_initial(store.from_array(d.folder, x))
+    t0 = time.monotonic()
+    src = fx.render(d, 0, d.frames, fx.get("vst3"), {"plugin": p.ref(), "mode": "pairs",
+                                                       "params": {"gain_db": 30.0 / 48.0}})
+    y = src.read(0, src.frames)
+    err = float(np.max(np.abs(y - x * 10 ** (6 / 20))))
+    lines.append(f"VST3 5.1 in pairs, +6 dB, latency 1000: {src.frames} frames, max error {err:.2e}, "
+                 f"{time.monotonic() - t0:.2f} s")
+    if src.frames != d.frames or err > 1e-5:
+        raise RuntimeError("the VST3 render")
+    try:
+        fx.render(d, 0, d.frames, fx.get("vst3"), {"plugin": p.ref(), "params": {"crash": 1.0}})
+        raise RuntimeError("a crashing plugin did not fail")
+    except client.PluginError as e:
+        lines.append(f"VST3 crash isolated: {e.kind}")
+    if not np.array_equal(d.read(0, d.frames), x):
+        raise RuntimeError("the document after the crash")
 
 
 def _selftest_film(session, tmp: str, lines: list) -> None:

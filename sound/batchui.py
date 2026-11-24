@@ -23,7 +23,7 @@ STEP_ICONS = {"gain": "fa6s.volume-high", "normalize": "fa6s.chart-simple", "dc"
               "reverb": "fa6s.church", "tempo": "fa6s.gauge-high", "nr": "fa6s.wand-magic-sparkles",
               "declick": "fa6s.bolt", "chmatrix": "fa6s.table-cells", "dialog": "fa6s.comment",
               "nr_auto": "fa6s.wand-magic", "decrackle": "fa6s.record-vinyl", "declip": "fa6s.scissors",
-              "dehum": "fa6s.plug-circle-xmark", "deess": "fa6s.wind"}
+              "dehum": "fa6s.plug-circle-xmark", "deess": "fa6s.wind", "vst3": "fa6s.plug"}
 STATUS_COLORS = {"ok": "#3fb27f", "error": "#e5534b", "skip": "#c69026", "cancel": "#8b949e", "run": "#4c9aff"}
 COLS = ("n", "file", "status", "progress", "lufs", "peak", "time", "note")
 
@@ -400,11 +400,14 @@ class BatchWindow(QDialog):
         from .fx import RESTORE
         menu.addSection(t("m_effects"))
         for k in batch.FX_STEPS:
-            if k not in RESTORE:
+            if k not in RESTORE and k != "vst3":
                 menu.addAction(style.icon(STEP_ICONS[k]), batch.Step(k).title(), lambda k=k: self._add_step(k))
         menu.addSection(t("m_restore"))                  # 2.0
         for k in RESTORE:
             menu.addAction(style.icon(STEP_ICONS[k]), batch.Step(k).title(), lambda k=k: self._add_step(k))
+        menu.addSection(t("vst_menu"))                   # 2.0: the plugins found, filled when it opens
+        self.vst_menu = menu.addMenu(style.icon("fa6s.plug"), t("vst_menu"))
+        self.vst_menu.aboutToShow.connect(self._fill_vst_menu)
         self.b_add.setMenu(menu)
         col.addWidget(self.b_add)
         self.b_edit = QPushButton(style.icon("fa6s.pen"), t("bt_edit_step") + "…")
@@ -449,9 +452,29 @@ class BatchWindow(QDialog):
             out.append(batch.Step(s.kind, dict(s.values), it.checkState() == Qt.Checked))
         return out
 
-    def _add_step(self, kind: str) -> None:
-        s = batch.Step(kind)
-        last = (self.cfg.get("fx_last") or {}).get(kind) if kind in batch.FX_STEPS else None
+    def _fill_vst_menu(self) -> None:
+        from .vst import scan
+        m = self.vst_menu
+        m.clear()
+        plugins = scan.library(self.cfg).plugins()
+        if not plugins:
+            a = m.addAction(t("vst_none"))
+            a.setEnabled(False)
+        for p in plugins:
+            m.addAction(f"{p.name}  ({p.maker})" if p.maker else p.name, lambda p=p: self.add_vst_step(p))
+
+    def add_vst_step(self, plugin) -> None:
+        self._add_step("vst3", {"plugin": plugin.ref()})
+
+    def _add_step(self, kind: str, extra: dict | None = None) -> None:
+        s = batch.Step(kind, extra or {})
+        key = kind
+        if kind == "vst3":
+            ref = (extra or {}).get("plugin") or {}
+            key = "vst3:" + (ref.get("id") or ref.get("path", "") + "|" + ref.get("name", ""))
+        last = (self.cfg.get("fx_last") or {}).get(key) if kind in batch.FX_STEPS else None
+        if last and kind == "vst3":
+            last = {**last, **(extra or {})}
         if last:
             s = batch.Step(kind, {**s.values, **last})
         row = self.chain.currentRow() + 1 if self.chain.currentRow() >= 0 else self.chain.count()

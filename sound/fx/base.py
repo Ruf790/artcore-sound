@@ -187,6 +187,10 @@ def render(d, a: int, b: int, effect: Effect, values: dict, progress: Progress |
     except BaseException:
         w.abort()
         raise
+    finally:
+        close = getattr(proc, "close", None)          # 2.0: a VST3 plugin's host process ends with the render
+        if close is not None:
+            close()
     return w.finish()
 
 
