@@ -255,7 +255,8 @@ class Library:
 
 
 def _inside(path: str, dirs: list[str]) -> bool:
-    p = os.path.normcase(os.path.abspath(path))
+    p = os.path.normcase(long_path(os.path.abspath(path)))
+    dirs = [os.path.normcase(long_path(d)) for d in dirs]
     return any(p == d or p.startswith(d.rstrip("\\/") + os.sep) for d in dirs)
 
 

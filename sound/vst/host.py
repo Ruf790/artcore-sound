@@ -36,8 +36,26 @@ import numpy as np
 TRY_CHANNELS = (1, 2, 6, 8)
 
 
+def binary(path: str) -> str:
+    """What pedalboard opens: on Windows not a bundle (a folder *.vst3) but the plugin inside it
+    (Contents\\x86_64-win\\<name>.vst3); elsewhere the bundle itself."""
+    if sys.platform != "win32" or not os.path.isdir(path):
+        return path
+    arch = "arm64-win" if os.environ.get("PROCESSOR_ARCHITECTURE", "").upper() == "ARM64" else "x86_64-win"
+    inside = os.path.join(path, "Contents", arch)
+    want = os.path.join(inside, os.path.basename(path))
+    if os.path.isfile(want):
+        return want
+    try:
+        found = [f for f in os.listdir(inside) if f.lower().endswith(".vst3")]
+    except OSError:
+        found = []
+    return os.path.join(inside, found[0]) if found else path
+
+
 def _load(path: str, name: str | None):
     import pedalboard
+    path = binary(path)
     p = pedalboard.load_plugin(path, plugin_name=name) if name else pedalboard.load_plugin(path)
     if not getattr(p, "is_effect", True) or getattr(p, "is_instrument", False):
         raise ValueError("instrument")
@@ -313,10 +331,16 @@ def scan_file(path: str) -> dict:
     """The plugins of one .vst3 file: name, maker, category, identifier, version, channels it takes, parameters."""
     import pedalboard
     out = []
-    names = pedalboard.VST3Plugin.get_plugin_names_for_file(path)
+    names = pedalboard.VST3Plugin.get_plugin_names_for_file(binary(path))
     for name in names:
         try:
-            p = pedalboard.load_plugin(path, plugin_name=name)
+            p = _load(path, name)
+        except ValueError as e:
+            if str(e) == "instrument":                   # an instrument: not listed among the effects
+                out.append({"name": name, "instrument": True})
+            else:
+                out.append({"name": name, "error": str(e)})
+            continue
         except Exception as e:                           # noqa: BLE001
             out.append({"name": name, "error": str(e) or type(e).__name__})
             continue
