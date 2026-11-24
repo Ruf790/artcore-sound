@@ -129,6 +129,20 @@
 | Снять выделение | Esc |
 | Выделить до начала | Shift+Home |
 | Выделить до конца | Shift+End |
+| **Мультитрек** | |
+| Новый мультитрек-проект | Ctrl+Alt+N |
+| Отправить в мультитрек | Ctrl+Alt+T |
+| Дорожки → Добавить стерео-дорожку | Ctrl+Shift+T |
+| Дорожки → Добавить шину | Ctrl+Shift+B |
+| Добавить файлы на дорожку | Ctrl+Shift+I |
+| Разрезать клипы | S |
+| Дублировать клипы | Ctrl+D |
+| Открыть клип в редакторе | Ctrl+Shift+O |
+| Привязка | N |
+| Огибающие громкости и панорамы | E |
+| Микшер | F9 |
+| Punch-in/out по выделению | P |
+| Свести в файл | Ctrl+Shift+X |
 | **Метки** | |
 | Добавить метку | M |
 | Регион из выделения | R |
@@ -257,6 +271,20 @@ An audio editor for Windows in the spirit of Sound Forge.
 | Select none | Esc |
 | Select to the start | Shift+Home |
 | Select to the end | Shift+End |
+| **Multitrack** | |
+| New multitrack project | Ctrl+Alt+N |
+| Send to multitrack | Ctrl+Alt+T |
+| Tracks → Add a stereo track | Ctrl+Shift+T |
+| Tracks → Add a bus | Ctrl+Shift+B |
+| Add files to the track | Ctrl+Shift+I |
+| Split the clips | S |
+| Duplicate the clips | Ctrl+D |
+| Open the clip in the editor | Ctrl+Shift+O |
+| Snap | N |
+| Volume and pan envelopes | E |
+| Mixer | F9 |
+| Punch in / out on the selection | P |
+| Mix down to a file | Ctrl+Shift+X |
 | **Markers** | |
 | Add a marker | M |
 | A region of the selection | R |

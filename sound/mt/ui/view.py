@@ -49,6 +49,7 @@ class MultitrackView(QWidget):
         self.split.addWidget(self.mixer)
         self.split.setStretchFactor(0, 1)
         self.split.setStretchFactor(1, 0)
+        self.split.setSizes([480, 340])
         root.addWidget(self.split, 1)
         self._lock = False
         self.hbar.valueChanged.connect(self._on_hbar)

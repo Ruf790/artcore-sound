@@ -253,8 +253,10 @@ class TrackHeader(QWidget):
             if not self.pan.isSliderDown():
                 self.pan.setValue(int(round(tr.pan * 100)))
             self.pan_l.setText(pan_text(tr.pan))
-            self.setProperty("current", current)
-            self.setStyleSheet("QWidget#mtHeader { background: %s; }" % (style.PANEL2 if current else style.PANEL))
+            if self.property("current") != current:
+                self.setProperty("current", current)
+                self.style().unpolish(self)
+                self.style().polish(self)
             if self.meter.n != (tr.channels if tr.kind == "audio" else self.meter.n):
                 self.meter.set_channels(tr.channels)
         finally:
@@ -328,10 +330,13 @@ class HeaderColumn(QWidget):
         h.addStretch(1)
 
     def set_project(self, p) -> None:
+        if p is not self.p:
+            for w in self.headers.values():
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+            self.headers = {}
         self.p = p
-        for w in self.headers.values():
-            w.deleteLater()
-        self.headers = {}
         self.sync()
 
     def sync(self) -> None:
@@ -340,7 +345,10 @@ class HeaderColumn(QWidget):
             return
         ids = {tr.id for tr in p.tracks}
         for tid in [k for k in self.headers if k not in ids]:
-            self.headers.pop(tid).deleteLater()
+            w = self.headers.pop(tid)
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
         armed = set(p.ui.get("armed") or [])
         mon = set(p.ui.get("monitor") or [])
         env = set(p.ui.get("env") or [])
@@ -349,6 +357,8 @@ class HeaderColumn(QWidget):
             w = self.headers.get(tr.id)
             if w is None or w.kind != tr.kind:
                 if w is not None:
+                    w.hide()
+                    w.setParent(None)
                     w.deleteLater()
                 w = TrackHeader(tr, self)
                 w.changed.connect(self.changed)

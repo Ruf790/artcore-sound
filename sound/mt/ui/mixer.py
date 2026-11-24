@@ -13,7 +13,7 @@ from ..model import MASTER
 from .headers import MiniMeter, _Btn, db_text, pan_text
 from .timeline import track_color
 
-STRIP_W = 112
+STRIP_W = 120
 
 
 def slot_name(s) -> str:
@@ -38,8 +38,8 @@ class Strip(QFrame):
         self.setObjectName("mtStrip")
         self.setFixedWidth(STRIP_W + (30 if track.kind == "master" else 0))
         v = QVBoxLayout(self)
-        v.setContentsMargins(4, 4, 4, 4)
-        v.setSpacing(3)
+        v.setContentsMargins(4, 3, 4, 3)
+        v.setSpacing(2)
         self.bar = QWidget()
         self.bar.setFixedHeight(4)
         v.addWidget(self.bar)
@@ -67,7 +67,7 @@ class Strip(QFrame):
         v.addLayout(fx_row)
         self.fx = QListWidget()
         self.fx.setObjectName("mtFx")
-        self.fx.setFixedHeight(64)
+        self.fx.setFixedHeight(46)
         self.fx.itemChanged.connect(self._fx_toggled)
         self.fx.itemDoubleClicked.connect(lambda it: self.action.emit(self.tid, f"fx_edit:{it.data(Qt.UserRole)}"))
         v.addWidget(self.fx)
@@ -105,7 +105,7 @@ class Strip(QFrame):
         mid.setSpacing(3)
         self.fader = QSlider(Qt.Vertical)
         self.fader.setRange(-600, 120)
-        self.fader.setMinimumHeight(110)
+        self.fader.setMinimumHeight(70)
         self.fader.setToolTip(t("mt_volume"))
         self.fader.valueChanged.connect(lambda x: self._emit("gain_db", x / 10, "mx_gain"))
         mid.addStretch(1)
@@ -252,6 +252,7 @@ class MixerPanel(QWidget):
         self.area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.area.setFrameShape(QFrame.NoFrame)
         self.inner = QWidget()
+        self.inner.setObjectName("mtMixerInner")
         self.row = QHBoxLayout(self.inner)
         self.row.setContentsMargins(4, 4, 4, 4)
         self.row.setSpacing(4)
@@ -263,11 +264,18 @@ class MixerPanel(QWidget):
         h.addLayout(self.master_box)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
+    @staticmethod
+    def _drop(w) -> None:
+        w.hide()
+        w.setParent(None)
+        w.deleteLater()
+
     def set_project(self, p) -> None:
+        if p is not self.p:
+            for s in self.strips.values():
+                self._drop(s)
+            self.strips = {}
         self.p = p
-        for s in self.strips.values():
-            s.deleteLater()
-        self.strips = {}
         self.sync()
 
     def sync(self) -> None:
@@ -277,12 +285,12 @@ class MixerPanel(QWidget):
         order = list(p.tracks) + [p.master]
         ids = {x.id for x in order}
         for tid in [k for k in self.strips if k not in ids]:
-            self.strips.pop(tid).deleteLater()
+            self._drop(self.strips.pop(tid))
         for i, tr in enumerate(p.tracks):
             s = self.strips.get(tr.id)
             if s is None or s.kind != tr.kind:
                 if s is not None:
-                    s.deleteLater()
+                    self._drop(s)
                 s = self.strips[tr.id] = Strip(tr)
                 s.changed.connect(self.changed)
                 s.action.connect(self.action)

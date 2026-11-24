@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ... import style
 from ...doc import Document
-from ...i18n import t
+from ...i18n import t as _t
 from ...proc import curve_gain
 from ...waveview import MARK_H, RULER_H, TIME_H, nice_step, ruler_label
 from ..model import ENV_MAX_DB, ENV_MIN_DB, env_value
@@ -157,7 +157,7 @@ class Timeline(QWidget):
 
     def fit_spp(self) -> float:
         p = self.p
-        n = max(p.frames if p else 0, int((p.rate if p else 48000) * 60))
+        n = max(p.frames if p else 0, int((p.rate if p else 48000) * 10))
         return max(MIN_SPP, n * 1.05 / max(1, self.width()))
 
     def spp(self) -> float:
@@ -329,7 +329,7 @@ class Timeline(QWidget):
                 p.fillRect(lane, c)
                 p.setPen(style.qcolor(style.MUTED))
                 p.setFont(_font(11))
-                p.drawText(lane.adjusted(10, 0, -10, 0), Qt.AlignLeft | Qt.AlignVCenter, t("mt_bus_lane"))
+                p.drawText(lane.adjusted(10, 0, -10, 0), Qt.AlignLeft | Qt.AlignVCenter, _t("mt_bus_lane"))
             for c in t.clips:
                 self._paint_clip(p, t, c, y, h)
             if t.id in (self.p.ui.get("env") or []):
@@ -438,13 +438,13 @@ class Timeline(QWidget):
         name = c.name or (m.name if m is not None else "?")
         extra = []
         if len(c.takes) > 1:
-            extra.append(t("mt_take_n", c.take + 1, len(c.takes)))
+            extra.append(_t("mt_take_n", c.take + 1, len(c.takes)))
         if abs(c.gain_db) > 0.05:
             extra.append(f"{c.gain_db:+.1f} dB".replace("-", "−"))
         if offline:
-            extra.append(t("mt_offline"))
+            extra.append(_t("mt_offline"))
         if c.muted:
-            extra.append(t("mt_muted"))
+            extra.append(_t("mt_muted"))
         text = name + ("  · " + " · ".join(extra) if extra else "")
         fm = QFontMetrics(p.font())
         tr = head.adjusted(HANDLE + 3, 0, -HANDLE - 3, 0)
@@ -621,7 +621,7 @@ class Timeline(QWidget):
         if not pr.tracks:
             p.setPen(style.qcolor(style.MUTED))
             p.setFont(_font(13))
-            p.drawText(QRectF(0, RULER_H, self.width(), h - RULER_H), Qt.AlignCenter, t("mt_empty_hint"))
+            p.drawText(QRectF(0, RULER_H, self.width(), h - RULER_H), Qt.AlignCenter, _t("mt_empty_hint"))
 
     # ── hit testing ───────────────────────────────────────────
     def hit(self, x: float, y: float):
@@ -750,7 +750,7 @@ class Timeline(QWidget):
             if not env:
                 env = [(0, 0.0 if which == "vol" else tr.pan)]
             env.append((f, v))
-            pr.set_envelope(tr.id, which, env, t("mt_u_env"))
+            pr.set_envelope(tr.id, which, env, _t("mt_u_env"))
             nt = pr.track(tr.id)
             env = nt.vol_env if which == "vol" else nt.pan_env
             idx = next((k for k, (ff, _v) in enumerate(env) if ff == f), 0)
@@ -832,7 +832,7 @@ class Timeline(QWidget):
             audio = [t for t in pr.tracks if t.kind == "audio"]
             ti = next((i for i, t in enumerate(audio) if t.id == d["track"]), 0)
             tj = next((i for i, t in enumerate(audio) if ln and t.id == ln[0].id), ti) if ln else ti
-            new_ids = pr.move_clips(ids, delta, tj - ti, t("mt_u_copy") if d["copy"] else t("mt_u_move"),
+            new_ids = pr.move_clips(ids, delta, tj - ti, _t("mt_u_copy") if d["copy"] else _t("mt_u_move"),
                                     copy=d["copy"], merge="drag")
             if d["copy"]:
                 d["copied"] = new_ids
@@ -842,17 +842,17 @@ class Timeline(QWidget):
             if ok:
                 self._snap_x = self.x_of(sf)
             c0 = d["c0"]
-            pr.trim_clip(c0.id, k, sf, t("mt_u_trim"), merge="drag", media_frames=self.media_frames(c0.media))
+            pr.trim_clip(c0.id, k, sf, _t("mt_u_trim"), merge="drag", media_frames=self.media_frames(c0.media))
         elif k in ("fade_in", "fade_out"):
             c0 = d["c0"]
             n = (f - c0.start) if k == "fade_in" else (c0.end - f)
-            pr.set_clip(c0.id, t("mt_u_fade"), merge="drag", **{k: max(0, n)})
+            pr.set_clip(c0.id, _t("mt_u_fade"), merge="drag", **{k: max(0, n)})
         elif k == "gain":
             c0 = d["c0"]
             db = c0.gain_db + (d["y0"] - y) * 0.25
             if not nosnap and abs(db) < 0.6:
                 db = 0.0
-            pr.set_clip(c0.id, t("mt_u_gain"), merge="drag", gain_db=round(db, 1))
+            pr.set_clip(c0.id, _t("mt_u_gain"), merge="drag", gain_db=round(db, 1))
             self.setToolTip(f"{db:+.1f} dB")
         elif k == "env":
             tr = pr.track(d["track"])
@@ -864,7 +864,7 @@ class Timeline(QWidget):
                 lo = env[d["index"] - 1][0] + 1 if d["index"] > 0 else 0
                 hi = env[d["index"] + 1][0] - 1 if d["index"] + 1 < len(env) else 10 ** 12
                 env[d["index"]] = (max(lo, min(hi, sf)), v)
-                pr.set_envelope(tr.id, d["which"], env, t("mt_u_env"), merge="drag")
+                pr.set_envelope(tr.id, d["which"], env, _t("mt_u_env"), merge="drag")
         self.refresh()
         self.edited.emit()
 
@@ -898,7 +898,7 @@ class Timeline(QWidget):
             return
         pr = self.p
         if d["kind"] == "marker" and d["moved"]:
-            pr.update_marker(d["id"], pos=d["pos"], end=d["end"], label=t("mt_u_marker"))
+            pr.update_marker(d["id"], pos=d["pos"], end=d["end"], label=_t("mt_u_marker"))
             self.edited.emit()
         elif d["kind"] == "marker":
             m = pr.marker(d["id"])
@@ -930,7 +930,7 @@ class Timeline(QWidget):
             env = list(tr.vol_env if which == "vol" else tr.pan_env)
             if 0 <= i < len(env):
                 del env[i]
-                self.p.set_envelope(tr.id, which, env, t("mt_u_env"))
+                self.p.set_envelope(tr.id, which, env, _t("mt_u_env"))
                 self.refresh()
                 self.edited.emit()
             return

@@ -981,6 +981,9 @@ class EffectDialog(QDialog):
                 self.noise_graph.set(prof, v["sensitivity"])
 
     def _push(self) -> None:
+        live = getattr(self, "live", None)              # 3.0: a multitrack slot hears the change at once
+        if live is not None:
+            live(self.result_values())
         if self.chain is not None:
             self.chain.set(self.values)
         if self.render_prev is not None or (self.b_preview.isChecked() and not self.eff.realtime):

@@ -334,6 +334,21 @@ class StillPicture(QLabel):
 
 
 # ── the window ────────────────────────────────────────────────
+class _ProjectFilm:
+    """A multitrack project as the window sees a document: its film, rate, cursor; the player plays its engine.
+    offset: the project frame where the film's time 0 is."""
+
+    def __init__(self, p, engine):
+        self.p, self.play_doc = p, engine
+        self.film = {"fps": p.video.get("fps") or 25.0, "path": p.video.get("path", "")}
+        self.rate = p.rate
+        self.offset = int(p.video.get("offset") or 0)
+
+    @property
+    def cursor(self) -> int:
+        return self.p.cursor
+
+
 class VideoWindow(QWidget):
     closed = Signal()
 
@@ -383,6 +398,10 @@ class VideoWindow(QWidget):
         self.tick()
 
     def _doc_film(self):
+        pr = getattr(self.win, "proj", None)
+        if pr is not None:                              # 3.0: the film a multitrack project scores
+            v = pr.video.get("path") or ""
+            return _ProjectFilm(pr, self.win.mt_engine(pr)), (v if v and os.path.isfile(v) else "")
         d = self.win.doc
         if d is None:
             return None, ""
@@ -404,8 +423,8 @@ class VideoWindow(QWidget):
             self.info.setText(t("vw_no_film"))
             return
         pl = self.win.player
-        playing = pl.state == "play" and pl.doc is d
-        audio_t = (pl.position() if playing else d.cursor) / d.rate
+        playing = pl.state == "play" and pl.doc is getattr(d, "play_doc", d)
+        audio_t = ((pl.position() if playing else d.cursor) - getattr(d, "offset", 0)) / d.rate
         if self.engine == "frames" and playing:
             now = time.monotonic()
             if now - self._last_still >= 0.25:              # a few frames a second while playing

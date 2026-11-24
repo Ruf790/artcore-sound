@@ -86,10 +86,11 @@ def remove(d: Document) -> None:
 
 
 class Entry:
-    """A document that can be brought back: the session folder it lived in, its folder, its journal."""
+    """A document that can be brought back: the session folder it lived in, its folder, its journal. kind
+    "project" (3.0): a multitrack project's journal (mt/projfile.py)."""
 
-    def __init__(self, session: str, folder: str, data: dict):
-        self.session, self.folder, self.data = session, folder, data
+    def __init__(self, session: str, folder: str, data: dict, kind: str = "document"):
+        self.session, self.folder, self.data, self.kind = session, folder, data, kind
 
     @property
     def name(self) -> str:
@@ -131,6 +132,15 @@ def scan(root: str) -> list[Entry]:
         if not (name.startswith("s-") and os.path.isdir(sp)) or not _stale(sp):
             continue
         for dn in os.listdir(sp):
+            pj = os.path.join(sp, dn, "project.json")            # 3.0: a multitrack project
+            if os.path.isfile(pj):
+                try:
+                    with open(pj, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, ValueError):
+                    data = {}
+                if data.get("kind") == "artcore-sound-project-journal" and data.get("dirty") and data.get("history"):
+                    out.append(Entry(sp, os.path.join(sp, dn), data, "project"))
             jp = os.path.join(sp, dn, JOURNAL)
             if not os.path.isfile(jp):
                 continue

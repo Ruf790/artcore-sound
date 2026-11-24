@@ -691,6 +691,27 @@ class Project:
         return {"clips": [(i - top, c) for i, c in found], "start": start, "rate": self.rate,
                 "media": {c.takes[k].media for _i, c in found for k in range(len(c.takes))}}
 
+    def copy_range(self, a: int, b: int, tracks=None) -> dict | None:
+        """The clipboard of the sound in [a, b) of the tracks (ids; all by default): the clips cut to it."""
+        a, b = sorted((int(a), int(b)))
+        audio = [t for t in self.tracks if t.kind == "audio" and (tracks is None or t.id in tracks)]
+        found = []
+        for i, t in enumerate(audio):
+            for c in t.clips:
+                s, e = max(a, c.start), min(b, c.end)
+                if e <= s:
+                    continue
+                d = s - c.start
+                nc = replace(c, start=s, length=e - s, takes=tuple(replace(k, offset=k.offset + d) for k in c.takes),
+                             fade_in=max(0, min(e - s, c.fade_in - d)),
+                             fade_out=max(0, min(e - s, c.fade_out - (c.end - e))))
+                found.append((i, nc))
+        if not found:
+            return None
+        top = min(i for i, _c in found)
+        return {"clips": [(i - top, c) for i, c in found], "start": a, "rate": self.rate,
+                "media": {k.media for _i, c in found for k in c.takes}}
+
     def paste_clips(self, clip: dict, at: int, track_id: int, label: str = "paste") -> list:
         audio = [t for t in self.tracks if t.kind == "audio"]
         i0 = next((i for i, t in enumerate(audio) if t.id == track_id), 0)
