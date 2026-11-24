@@ -21,7 +21,9 @@ from . import spectrogram as sgm
 from .doc import Document, fmt_time, parse_time
 from .errors import human as human_error
 from .i18n import fmt_bytes, t
-from .player import Player
+from .filmwin import FilmCommands
+from .player import Player, Volume
+from .volui import STEP_DB, VolumeControl
 from .waveview import Meters, Overview, WaveView
 
 UNDO_KEYS = {"open", "new", "cut", "paste", "delete", "silence", "insert silence", "trim", "add marker", "add region",
@@ -38,7 +40,7 @@ class Bridge(QObject):
     stats = Signal(object, object)              # key, analysis.Stats (the status bar's background measuring)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, FilmCommands):
     UPDATE_EVERY = 24 * 3600
 
     def __init__(self, cfg: dict, session):
@@ -46,7 +48,14 @@ class MainWindow(QMainWindow):
         self.cfg, self.session = cfg, session
         self.docs: list[Document] = []
         self.clip = None
-        self.player = Player(cfg.get("device", ""), cfg.get("latency", "low"))
+        self.volume = Volume(cfg.get("play_volume_db", 0.0), cfg.get("play_muted", False))   # what is heard (2.0)
+        self.player = Player(cfg.get("device", ""), cfg.get("latency", "low"), self.volume)
+        self._vol_save = QTimer(self)
+        self._vol_save.setSingleShot(True)
+        self._vol_save.setInterval(700)
+        self._vol_save.timeout.connect(self._save_volume)
+        self.video_win = None                   # 2.0: the video window (videoui.py)
+        self.last_video_out = ""
         self.bridge = Bridge()
         self.bridge.progress.connect(self._on_progress)
         self.bridge.done.connect(self._on_job_done)
@@ -65,6 +74,8 @@ class MainWindow(QMainWindow):
         self.batch_win = None
         self._recorded = 0
         self.fx_dlg = None                      # the effect window while it is open
+        self.mrec = None                        # 2.0: macro.Recorder while a macro is being recorded
+        self._macro_actions: list = []
         self.job = None                         # (label, Progress) while a long job runs
         self._job_doc = None
         self._open_queue: list = []
@@ -189,6 +200,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_transport())
         self.setCentralWidget(central)
         self._build_status()
+        self.fill_macros()                           # 2.0: the saved macros with their hotkeys
         self.wave.selectionChanged.connect(self._on_selection)
         self.wave.viewChanged.connect(self._on_view)
         self.wave.seekRequested.connect(self._on_seek)
@@ -227,6 +239,13 @@ class MainWindow(QMainWindow):
         self.a_save_as = A(m, "fa6s.file-export", t("save_as") + "…", self.save_as, "Ctrl+Shift+S")
         self.a_save_sel = A(m, "fa6s.scissors", t("save_sel") + "…", lambda: self.save_as(selection=True))
         self.a_save_regions = A(m, "fa6s.layer-group", t("mk_save_regions") + "…", self.save_regions_dialog)
+        self.a_return_video = A(m, "fa6s.film", t("rv_title") + "…", self.return_to_video_dialog, "Ctrl+Shift+E")
+        m.addSeparator()
+        cdm = m.addMenu(style.icon("fa6s.compact-disc"), "Audio CD")          # 2.0
+        self.a_cd_rip = A(cdm, "fa6s.compact-disc", t("cd_rip") + "…", self.cd_rip_dialog, "Ctrl+Shift+D")
+        self.a_cd_burn = A(cdm, "fa6s.fire", t("cd_burn") + "…", self.cd_burn_dialog)
+        cdm.addSeparator()
+        self.a_cd_eject = A(cdm, "fa6s.eject", t("cd_eject"), self.cd_eject)
         m.addSeparator()
         self.a_show = A(m, "fa6s.folder", t("show_file"), self._show_file)
         m.addSeparator()
@@ -344,12 +363,23 @@ class MainWindow(QMainWindow):
         self.a_to_stereo = next(a for a in self.proc_actions if a.objectName() == "p_to_stereo")
         m = mb.addMenu(t("m_effects"))
         self.fx_actions = {}
-        for key, icon in (("eq", "fa6s.sliders"), ("geq", "fa6s.chart-column"), (None, None),
-                          ("comp", "fa6s.compress"), ("limit", "fa6s.arrows-down-to-line"), (None, None),
-                          ("delay", "fa6s.clone"), ("reverb", "fa6s.church"), (None, None),
-                          ("tempo", "fa6s.gauge-high"), (None, None),
-                          ("take_noise", "fa6s.eye-dropper"), ("nr", "fa6s.wand-magic-sparkles"),
-                          ("declick", "fa6s.bolt")):
+        effects = (("eq", "fa6s.sliders"), ("geq", "fa6s.chart-column"), (None, None),
+                   ("comp", "fa6s.compress"), ("limit", "fa6s.arrows-down-to-line"), (None, None),
+                   ("delay", "fa6s.clone"), ("reverb", "fa6s.church"), (None, None),
+                   ("tempo", "fa6s.gauge-high"))
+        restore = (("take_noise", "fa6s.eye-dropper"), ("nr", "fa6s.wand-magic-sparkles"),         # 2.0: a menu
+                   ("nr_auto", "fa6s.wand-magic"), (None, None),
+                   ("declick", "fa6s.bolt"), ("decrackle", "fa6s.record-vinyl"), ("declip", "fa6s.scissors"), (None, None),
+                   ("dehum", "fa6s.plug-circle-xmark"), ("deess", "fa6s.wind"))
+        for key, icon in effects + (("menu", None),) + restore:
+            if key == "menu":
+                m.addSeparator()                       # 2.0: the VST3 plugins, filled when it opens
+                self.vst_menu = m.addMenu(style.icon("fa6s.plug"), t("vst_menu"))
+                self.vst_menu.aboutToShow.connect(self._fill_vst_menu)
+                self._fill_vst_menu()
+                m = mb.addMenu(t("m_restore"))
+                self.restore_menu = m
+                continue
             if key is None:
                 m.addSeparator()
                 continue
@@ -363,6 +393,9 @@ class MainWindow(QMainWindow):
                 act = A(m, icon, t("fx_" + key) + "…", lambda k=key: self.effect_dialog(k))
             act.setObjectName("fx_" + key)
             self.fx_actions[key] = act
+        m.addSeparator()
+        self.a_spectral = A(m, "fa6s.paintbrush", t("se_title") + "…", self.spectral_panel, "Ctrl+Shift+R")
+        self.build_film_menu(mb, A)                 # 2.0: Фильм / Film
         m = mb.addMenu(t("m_tools"))
         self.a_stats = A(m, "fa6s.table-list", t("stats") + "…", self.statistics_dialog, "Ctrl+I")
         self.a_spectrum = A(m, "fa6s.chart-line", t("sp_title") + "…", self.spectrum_dialog, "Ctrl+Shift+F")
@@ -371,6 +404,13 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_sg_settings)
         m.addSeparator()
         self.a_batch = A(m, "fa6s.layer-group", t("bt_title") + "…", self.batch_window, "Ctrl+B")
+        m = mb.addMenu(t("m_macros"))                # 2.0
+        self.macro_menu = m
+        self.a_mrec = A(m, "fa6s.circle", t("mc_record"), self.macro_record_toggle, "Ctrl+Shift+M")
+        self.a_mrec.setCheckable(True)
+        self.a_mmanage = A(m, "fa6s.list-check", t("mc_manage") + "…", self.macro_manager)
+        m.addSeparator()
+        self._macro_sep = m.addSeparator()
         m = mb.addMenu(t("m_transport"))
         self.a_play = A(m, "fa6s.play", t("play"), self.play_toggle, "Space")
         self.a_play_all = A(m, "fa6s.circle-play", t("play_all"), self.play_all, "Shift+Space")
@@ -381,6 +421,12 @@ class MainWindow(QMainWindow):
         self.a_loop.setChecked(self.cfg.get("loop", False))
         m.addSeparator()
         self.a_record = A(m, "fa6s.circle", t("record") + "…", self.record_toggle, "Ctrl+R")
+        m.addSeparator()
+        self.a_vol_up = A(m, "fa6s.volume-high", t("vol_up"), lambda: self.vol.step(STEP_DB), "Ctrl+Alt+Up")
+        self.a_vol_down = A(m, "fa6s.volume-low", t("vol_down"), lambda: self.vol.step(-STEP_DB), "Ctrl+Alt+Down")
+        self.a_mute = A(m, "fa6s.volume-xmark", t("vol_mute_act"), lambda: self.vol.toggle_mute(), "Ctrl+Alt+M")
+        self.a_mute.setCheckable(True)
+        self.a_mute.setChecked(self.volume.muted)
         return mb
 
     def _tool(self, icon: str, tip: str, slot, text: str = "", checkable: bool = False) -> QToolButton:
@@ -491,6 +537,10 @@ class MainWindow(QMainWindow):
         for b in (self.t_start, self.t_rew, self.t_play, self.t_pause, self.t_stop, self.t_ff, self.t_end,
                   self.t_loop, self.t_rec):
             h.addWidget(b)
+        h.addSpacing(10)
+        self.vol = VolumeControl(self.volume)
+        self.vol.changed.connect(self._volume_changed)
+        h.addWidget(self.vol)
         h.addSpacing(14)
         self.counter = QLabel(fmt_time(0, 48000))
         self.counter.setObjectName("counter")
@@ -543,6 +593,10 @@ class MainWindow(QMainWindow):
         for w in (self.st_stats, self.st_sel, self.st_disk, self.st_dev):
             w.setObjectName("hint")
             sb.addPermanentWidget(w)
+        self.st_macro = QLabel("")                     # 2.0: «● Recording a macro: 3 steps»
+        self.st_macro.setStyleSheet("color: #e5534b; font-weight: 700;")
+        self.st_macro.hide()
+        sb.insertPermanentWidget(0, self.st_macro)
 
     # ── documents ─────────────────────────────────────────────
     @property
@@ -716,7 +770,7 @@ class MainWindow(QMainWindow):
             return False
         if not d.save_format or not d.path:
             return self.save_as(wait=wait)
-        return self._save_to(d, d.path, d.save_format, d.save_opts.get("option", ""), wait=wait)
+        return self._save_to(d, d.path, d.save_format, d.save_opts.get("option", ""), wait=wait, rec=True)
 
     def save_as(self, selection: bool = False, wait: bool = False) -> bool:
         d = self.doc
@@ -745,12 +799,14 @@ class MainWindow(QMainWindow):
         self.cfg["save_dir"] = os.path.dirname(path)
         config.save(self.cfg)
         rng = d.sel if dlg.only_selection() and d.sel else None
-        return self._save_to(d, path, fmt, opt, rng, wait=wait)
+        return self._save_to(d, path, fmt, opt, rng, wait=wait, rec=rng is None)
 
-    def _save_to(self, d: Document, path: str, fmt: str, opt: str, rng=None, wait: bool = False) -> bool:
+    def _save_to(self, d: Document, path: str, fmt: str, opt: str, rng=None, wait: bool = False,
+                 rec: bool = False) -> bool:
         self.stop_play()
         a, b = rng if rng else (0, d.frames)
         result = {}
+        rec_values = self._macro_save_values(d, path, fmt, opt) if rec and self.mrec is not None else None
 
         def work(progress):
             media.save(d, path, fmt, opt, progress, a, b)
@@ -763,6 +819,9 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, APP_TITLE, t("save_failed", os.path.basename(path), err))
                 return
             result["ok"] = True
+            if rec_values is not None:
+                self.mrec.note(d, "save", rec_values, ("keep",))
+                self._macro_status()
             if rng is None:                        # the whole file: the document is now that file
                 d.path, d.name, d.save_format, d.save_opts = path, os.path.basename(path), fmt, {"option": opt}
                 d.mark_saved()
@@ -869,6 +928,9 @@ class MainWindow(QMainWindow):
     def undo(self) -> None:
         d = self._edit_doc()
         if d and d.undo():
+            if self.mrec is not None:                     # 2.0: recording — the last step goes too
+                self.mrec.undo()
+                self._macro_status()
             self._edited()
 
     def redo(self) -> None:
@@ -898,35 +960,210 @@ class MainWindow(QMainWindow):
     def _label(key: str) -> str:
         return t("u_" + key.replace(" ", "_")) if key in UNDO_KEYS else key
 
+    # ── 2.0: macros ───────────────────────────────────────────
+    def fill_macros(self) -> None:
+        """The saved macros at the end of the Macros menu, each with its hotkey."""
+        from . import macro
+        for a in self._macro_actions:
+            self.macro_menu.removeAction(a)
+            self.removeAction(a)
+            a.deleteLater()
+        self._macro_actions = []
+        macros = macro.load_all()
+        if not macros:
+            a = QAction(t("mc_none"), self)
+            a.setEnabled(False)
+            self.macro_menu.addAction(a)
+            self._macro_actions.append(a)
+            return
+        taken = self._taken_keys()
+        for m in macros:
+            keys = m.hotkey if m.hotkey and m.hotkey not in taken else None
+            a = self._act(self.macro_menu, "fa6s.play", m.name, lambda m=m: self.run_macro(m), keys)
+            a.setObjectName("macro:" + m.name)
+            self._macro_actions.append(a)
+        self._update_actions()
+
+    def _taken_keys(self) -> set:
+        """The hotkeys of the window's own commands (a macro's may not take one of them)."""
+        out = set()
+        for a in self.actions():
+            if a in self._macro_actions:
+                continue
+            for k in a.shortcuts():
+                if not k.isEmpty():
+                    out.add(k.toString())
+        return out
+
+    def macro_record_toggle(self) -> None:
+        from . import macro
+        if self.mrec is None:
+            self.mrec = macro.Recorder()
+            self.a_mrec.setChecked(True)
+            self.a_mrec.setText(t("mc_stop"))
+            self._macro_status()
+            self._toast(t("mc_recording"))
+            return
+        rec, self.mrec = self.mrec, None
+        self.a_mrec.setChecked(False)
+        self.a_mrec.setText(t("mc_record"))
+        self._macro_status()
+        if not rec.steps:
+            self._toast(t("mc_empty"))
+            return
+        self.save_recorded(rec)
+
+    def save_recorded(self, rec, name: str | None = None) -> None:
+        """«Stop recording»: the macro's name (and, if wanted, its steps) — then it is in the menu."""
+        from . import macro, macroui
+        m = rec.macro(name or "")
+        if name is None:
+            dlg = macroui.MacroDialog(self, m, new=True)
+            if not dlg.exec():
+                return
+            m = dlg.result()
+        macro.save(m)
+        self.fill_macros()
+        self._toast(t("mc_saved", m.name))
+
+    def _macro_status(self) -> None:
+        if not hasattr(self, "st_macro"):
+            return
+        if self.mrec is None:
+            self.st_macro.hide()
+        else:
+            self.st_macro.setText("● " + t("mc_rec_status", len(self.mrec.steps)))
+            self.st_macro.show()
+
+    def macro_manager(self) -> None:
+        from . import macroui
+        macroui.MacroManager(self).exec()
+        self.fill_macros()
+
+    def run_macro(self, m, whole: bool = False) -> None:
+        """The macro over the document (its selection as the macro's first selection; none — the whole file), on a
+        copy in a thread; the result is one undo step «Macro: name»."""
+        from . import macro
+        d = self._edit_doc()
+        if d is None or self._busy() or d.frames <= 0 or not m.steps:
+            return
+        if self.mrec is not None:
+            QMessageBox.information(self, APP_TITLE, t("mc_not_while_rec"))
+            return
+        self.stop_play()
+        c = d.clone()
+        if whole:
+            c.sel = None
+        ctx = macro.Context(d.path, self.clip)
+
+        def work(pr):
+            macro.run(c, m.steps, pr, ctx)
+            return c
+
+        def done(_res, err):
+            if err:
+                d.drop_clone(c)
+                if err != "cancel":
+                    QMessageBox.warning(self, APP_TITLE, t("mc_failed", m.name, err))
+                return
+            label = t("mc_undo", m.name)
+            if c.pieces != d.pieces or (c.rate, c.channels) != (d.rate, d.channels) or c.markers != d.markers:
+                d.take(c, label)
+            else:
+                d.sel, d.cursor = c.sel, c.cursor
+            d.drop_clone(c)
+            if ctx.clip is not None:
+                self.clip = ctx.clip
+            self.meters.set_channels(d.labels)
+            self.wave.zoom_all()
+            self._edited()
+            msg = t("mc_done", m.name)
+            if ctx.saved:
+                msg += " · " + t("mc_saved_files", ", ".join(os.path.basename(p) for p in ctx.saved))
+            if ctx.notes:
+                msg += " · " + "; ".join(dict.fromkeys(ctx.notes))
+            self._toast(msg)
+        self._make_room(d, d.frames)
+        self.run_job(t("mc_running", m.name), work, done, d)
+
+    def _macro_fx_values(self, key: str, values: dict, keep_tail: bool) -> dict:
+        """An effect as a macro step: its values, the tail, the noise sample as a file of the macro."""
+        v = {**values, "keep_tail": bool(keep_tail)}
+        if key == "nr":
+            from . import batch, fx, macro
+            prof = fx.get("nr").profile
+            if prof is not None:
+                path = os.path.join(macro.folder(), "noise-" + time.strftime("%Y%m%d-%H%M%S") + batch.NOISE_EXT)
+                os.makedirs(macro.folder(), exist_ok=True)
+                batch.save_noise_profile(path, prof)
+                v["profile"] = path
+        return v
+
+    @staticmethod
+    def _macro_save_values(d, path: str, fmt: str, opt: str) -> dict:
+        """Save / Save as as a macro step: the same format; the name after the file's own ({name} + what was
+        added), its folder unless another one was chosen."""
+        own = d.path or ""
+        stem = os.path.splitext(os.path.basename(own))[0] if own else ""
+        new = os.path.splitext(os.path.basename(path))[0]
+        if stem and new == stem:
+            tmpl = "{name}"
+        elif stem and new.startswith(stem):
+            tmpl = "{name}" + new[len(stem):]
+        else:
+            tmpl = new
+        same = own and os.path.normcase(os.path.dirname(os.path.abspath(own))) == \
+            os.path.normcase(os.path.dirname(os.path.abspath(path)))
+        return {"format": fmt, "option": opt, "template": tmpl, "folder": "" if same else os.path.dirname(path)}
+
+    # ── 2.0: recording a macro ────────────────────────────────
+    def _place(self, d, cursor: bool = False):
+        """Where a command acts, for the macro being recorded (None: nothing is recorded)."""
+        return self.mrec.place(d, cursor) if self.mrec is not None and d is not None else None
+
+    def _rec(self, d, kind: str, values: dict | None = None, before=None) -> None:
+        if self.mrec is not None and d is not None:
+            self.mrec.note(d, kind, values, before)
+            self._macro_status()
+
     def cut(self) -> None:
         d = self._edit_doc()
         if d and d.sel:
+            at = self._place(d)
             self.clip = d.cut(*d.sel)
+            self._rec(d, "cut", before=at)
             self._edited()
 
     def copy(self) -> None:
         d = self.doc
         if d and d.sel:
             self.clip = d.copy(*d.sel)
+            self._rec(d, "copy")
             self._update_actions()
 
     def delete(self) -> None:
         d = self._edit_doc()
         if d and d.sel:
+            at = self._place(d)
             d.delete(*d.sel)
+            self._rec(d, "delete", before=at)
             self._edited()
 
     def trim(self) -> None:
         d = self._edit_doc()
         if d and d.sel:
+            at = self._place(d)
             d.trim(*d.sel)
+            self._rec(d, "trim", before=at)
             self.wave.zoom_all()
             self._edited()
 
     def silence(self) -> None:
         d = self._edit_doc()
         if d and d.sel:
+            at = self._place(d)
             d.silence(*d.sel)
+            self._rec(d, "silence", before=at)
             self._edited()
 
     def paste(self) -> None:
@@ -934,8 +1171,10 @@ class MainWindow(QMainWindow):
         if d is None or self.clip is None:
             return
         a, b = d.sel if d.sel else (d.cursor, d.cursor)
+        at = self._place(d, cursor=True)
         if d.fits(self.clip):
             d.paste(self.clip, a, b)
+            self._rec(d, "paste", before=at)
             self._edited()
             return
         clip = self.clip
@@ -947,6 +1186,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, APP_TITLE, t("op_failed", err))
                 return
             d.paste(conv, a, b)
+            self._rec(d, "paste", before=at)
             self._edited()
         self.run_job(t("converting"), lambda pr: proc.convert_clip(clip, d, pr), done, d)
 
@@ -979,7 +1219,9 @@ class MainWindow(QMainWindow):
                 config.save(self.cfg)
             d = self._edit_doc()
             if d and n:
+                at = self._place(d, cursor=True)
                 d.insert_silence(d.cursor if not d.sel else d.sel[0], n)
+                self._rec(d, "insert_silence", {"seconds": n / d.rate}, at)
                 self._edited()
 
     def select_all(self) -> None:
@@ -1023,15 +1265,16 @@ class MainWindow(QMainWindow):
         m.exec(pos)
 
     # ── processing ────────────────────────────────────────────
-    def _process(self, label: str, make, rng=None, meta=None, after=None) -> None:
+    def _process(self, label: str, make, rng=None, meta=None, after=None, rec=None) -> None:
         """make(progress) → a new source for rng (default: the selection or the whole file) in a thread; after()
-        once the result is in the document."""
+        once the result is in the document. rec (2.0): (kind, values) of the macro step it is."""
         d = self._edit_doc()
         if d is None or d.frames <= 0:
             return
         a, b = rng or self._range(d)
         whole = (a, b) == (0, d.frames)
         had_sel = d.sel
+        at = self._place(d)
 
         def done(src, err):
             if err:
@@ -1044,6 +1287,8 @@ class MainWindow(QMainWindow):
                 self.wave.zoom_all()
             else:
                 d.replace(a, b, src, label, sel=had_sel if had_sel else None)
+            if rec is not None:
+                self._rec(d, rec[0], rec[1], at)
             self._edited()
             if after is not None:
                 after()
@@ -1071,7 +1316,9 @@ class MainWindow(QMainWindow):
         a, b = self._range(d)
         label = t({"reverse": "p_reverse", "invert": "p_invert", "fade_in": "p_fade_in", "fade_out": "p_fade_out",
                    "gain": "p_gain", "normalize": "p_normalize"}[op])
-        self._process(label, lambda pr: proc.apply_op(d, op, a, b, pr, **kw), (a, b))
+        rec = {"gain": ("gain", {"db": kw.get("db", 0.0)}), "fade_in": ("fade_in", {"curve": kw.get("curve", "linear")}),
+               "fade_out": ("fade_out", {"curve": kw.get("curve", "linear")})}.get(op, (op, {}))
+        self._process(label, lambda pr: proc.apply_op(d, op, a, b, pr, **kw), (a, b), rec=rec)
 
     def fade(self, op: str, curve: str = "linear") -> None:
         self.simple_op(op, curve=curve)
@@ -1119,7 +1366,9 @@ class MainWindow(QMainWindow):
             out["res"] = res
             return src
         label = t("p_norm_lufs", fmt_db(target)) if mode == "loudness" else t("p_normalize")
-        self._process(label, make, (a, b), after=lambda: self._normalized(out.get("res")))
+        rec = ("normalize", {"mode": "loudness" if mode == "loudness" else ("true_peak" if opts["peak_tp"] else "peak"),
+                             "target": target, "ceiling": opts["ceiling"]})
+        self._process(label, make, (a, b), after=lambda: self._normalized(out.get("res")), rec=rec)
 
     def _normalized(self, res) -> None:
         from .dialogs import fmt_db
@@ -1148,7 +1397,7 @@ class MainWindow(QMainWindow):
             if "dc" in out:
                 self._toast(t("dc_done", ", ".join(f"{lab} {fmt_db(v * 100, 3)} %"
                                                    for lab, v in zip(d.labels, out["dc"]))))
-        self._process(t("p_dc"), make, (a, b), after=after)
+        self._process(t("p_dc"), make, (a, b), after=after, rec=("dc", {}))
 
     def trim_silence_dialog(self) -> None:
         d = self.doc
@@ -1175,7 +1424,9 @@ class MainWindow(QMainWindow):
             self._toast(t("ts_nothing"))
             return
         cut = (edges[0] - a, b - edges[1])
+        at = self._place(d)
         d.keep(a, b, *edges, label=t("p_trim_silence"))
+        self._rec(d, "trim_silence", {"threshold": thr.value(), "margin": mar.value()}, at)
         self._edited()
         self._toast(t("ts_done", fmt_time(cut[0], d.rate), fmt_time(cut[1], d.rate)))
 
@@ -1193,14 +1444,14 @@ class MainWindow(QMainWindow):
         self.cfg["to_mono"] = mode
         config.save(self.cfg)
         self._process(t("p_to_mono") + f" ({t('tm_' + mode).lower()})", lambda pr: proc.stereo_to_mono(d, mode, pr),
-                      (0, d.frames), {"channels": 1, "layout": "mono", "labels": ("M",)})
+                      (0, d.frames), {"channels": 1, "layout": "mono", "labels": ("M",)}, rec=("to_mono", {"mode": mode}))
 
     def to_stereo(self) -> None:
         d = self.doc
         if d is None or self._busy() or d.frames <= 0 or d.channels != 1:
             return
         self._process(t("p_to_stereo"), lambda pr: proc.mono_to_stereo(d, pr), (0, d.frames),
-                      {"channels": 2, "layout": "stereo", "labels": ("L", "R")})
+                      {"channels": 2, "layout": "stereo", "labels": ("L", "R")}, rec=("to_stereo", {}))
 
     def resample_dialog(self) -> None:
         d = self.doc
@@ -1217,24 +1468,46 @@ class MainWindow(QMainWindow):
             config.save(self.cfg)
             self._process(t("p_resample") + f" {rate} Hz", lambda pr: proc.convert_document(d, rate, d.channels,
                                                                                             d.layout, pr),
-                          (0, d.frames), {"rate": rate})
+                          (0, d.frames), {"rate": rate}, rec=("rate", {"rate": rate}))
 
     def channels_dialog(self) -> None:
         d = self.doc
         if d is None or self._busy() or d.frames <= 0:
             return
         from .dialogs import ValueDialog
+        from . import chans
         items = [(t("ch_mono"), 1), (t("ch_stereo"), 2), ("5.1", 6)]
         dlg = ValueDialog(t("chn_title"), self, t("chn_note"))
         last = int(self.cfg.get("channels_to") or 0)
         c = dlg.combo(t("chn_to"), items, last if last and last != d.channels else (2 if d.channels != 2 else 1))
+        meth = dlg.combo(t("mx_method"), [], None)                  # 2.0: how 5.1 → 2 and 2 → 5.1 go
+
+        def methods():
+            want = int(c.currentData())
+            meth.clear()
+            if d.channels >= 5 and want == 2:
+                for k in chans.DOWNMIX:
+                    meth.addItem(t("mx_" + k), k)
+            elif d.channels <= 2 and want == 6:
+                meth.addItem(t("mx_upmix"), "upmix")
+                meth.addItem(t("mx_plain"), "auto")
+            else:
+                meth.addItem(t("mx_plain"), "auto")
+            i = meth.findData(self.cfg.get("channels_method"))
+            meth.setCurrentIndex(max(0, i))
+        c.currentIndexChanged.connect(lambda _i: methods())
+        methods()
         if dlg.exec() and c.currentData() != d.channels:
             ch = int(c.currentData())
+            how = meth.currentData() or "auto"
             self.cfg["channels_to"] = ch
+            self.cfg["channels_method"] = how
             config.save(self.cfg)
             lay = ff.layout_for(ch)
-            self._process(t("p_channels") + f": {lay}", lambda pr: proc.convert_document(d, d.rate, ch, lay, pr),
-                          (0, d.frames), {"channels": ch, "layout": lay, "labels": tuple(ff.labels(ch, lay))})
+            name = t("p_channels") + f": {lay}" + ("" if how == "auto" else f" ({t('mx_' + how)})")
+            self._process(name, lambda pr: chans.convert(d, ch, how, pr),
+                          (0, d.frames), {"channels": ch, "layout": lay, "labels": tuple(ff.labels(ch, lay))},
+                          rec=("channels", {"channels": ch, "method": how}))
 
     # ── effects (0.3) ─────────────────────────────────────────
     def effect_dialog(self, key: str) -> None:
@@ -1254,6 +1527,60 @@ class MainWindow(QMainWindow):
             return
         self.apply_effect(key, dlg.result_values(), dlg.keep_tail_on(), (a, b))
 
+    # ── Audio CD (2.0) ────────────────────────────────────────
+    def cd_rip_dialog(self) -> None:
+        if self._busy():
+            return
+        from . import cdui
+        self.stop_play()
+        dlg = cdui.RipDialog(self)
+        if dlg.exec():
+            cdui.run_rip(self, dlg.settings())
+
+    def cd_burn_dialog(self) -> None:
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0:
+            return
+        from . import cdui
+        self.stop_play()
+        dlg = cdui.BurnDialog(self, d)
+        if dlg.exec():
+            cdui.run_burn(self, d, dlg.settings())
+
+    def cd_eject(self) -> None:
+        from .cd import drive as cdd
+        for info in cdd.drives()[:1]:
+            try:
+                with cdd.open_drive(info) as dr:
+                    dr.eject()
+            except Exception as e:                       # noqa: BLE001
+                self._toast(str(e))
+
+    # ── VST3 plugins (2.0) ────────────────────────────────────
+    def _fill_vst_menu(self) -> None:
+        from . import vstui
+        vstui.fill_menu(self, self.vst_menu)
+
+    def vst_dialog(self, plugin) -> None:
+        """A VST3 plugin's window over the selection (or the whole file), as any effect."""
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0:
+            return
+        from . import fxui, vstui
+        self.stop_play()
+        vstui.remember(self.cfg, plugin)
+        config.save(self.cfg)
+        a, b = self._range(d)
+        dlg = fxui.EffectDialog(self, "vst3", d, a, b, not d.sel, plugin=plugin.ref())
+        self.fx_dlg = dlg
+        ok = dlg.exec()
+        self.fx_dlg = None
+        if ok:
+            self.apply_effect("vst3", dlg.result_values(), dlg.keep_tail_on(), (a, b))
+
+    def vst_scan(self) -> None:
+        self.settings_dialog(page="vst3", scan=True)
+
     def apply_effect(self, key: str, values: dict, keep_tail: bool = False, rng=None) -> None:
         from . import fx
         d = self._edit_doc()
@@ -1264,6 +1591,8 @@ class MainWindow(QMainWindow):
         had_sel = d.sel
         label = eff.label(values)
         info = {}
+        at = self._place(d)
+        rec_values = self._macro_fx_values(key, values, keep_tail) if at is not None else None
 
         def work(pr):
             return fx.render(d, a, b, eff, values, pr, keep_tail, info)
@@ -1275,14 +1604,29 @@ class MainWindow(QMainWindow):
                 return
             end = a + src.frames if eff.realtime else b         # a kept tail reaches past b
             d.replace(a, end, src, label, sel=(a, a + src.frames) if had_sel else None)
+            if rec_values is not None:
+                self._rec(d, key, rec_values, at)
             self._edited()
             proc = info.get("proc")
             if key == "declick" and proc is not None:
                 self._toast(t("declick_done", proc.found))
+            elif key in ("declip", "decrackle") and proc is not None:
+                self._toast(t(key + "_done", proc.found))
         if not had_sel:
             self._toast(t("p_whole"))
         self._make_room(d, b - a)
         self.run_job(t("processing", label), work, done, d)
+
+    def spectral_panel(self) -> None:
+        """Restoration → Spectral editing: the window beside the wave (one at a time)."""
+        from .specui import SpectralPanel
+        if self.doc is None:
+            return
+        if getattr(self, "se_panel", None) is None:
+            self.se_panel = SpectralPanel(self)
+        self.se_panel.show()
+        self.se_panel.raise_()
+        self.se_panel.activateWindow()
 
     def take_noise_sample(self) -> None:
         """Effects → Take a noise sample: the noise spectrum of the selection, kept for the session."""
@@ -1956,12 +2300,21 @@ class MainWindow(QMainWindow):
                       (self.a_cut, sel), (self.a_copy, sel), (self.a_delete, sel), (self.a_trim, sel),
                       (self.a_silence, sel), (self.a_paste, has and self.clip is not None),
                       (self.a_paste_new, self.clip is not None), (self.a_ins_sil, has), (self.a_sel_all, has),
-                      (self.a_zoom_sel, sel), (self.a_play, has), (self.a_play_all, has)):
+                      (self.a_zoom_sel, sel), (self.a_play, has), (self.a_play_all, has),
+                      (self.a_return_video, has), *((x, has) for x in self.film_actions)):
             a.setEnabled(on and not (busy and a not in (self.a_copy, self.a_close_all)))
         for a in self.proc_actions:
             a.setEnabled(has and not busy)
+        self.a_cd_burn.setEnabled(has and not busy)                # 2.0: Audio CD
+        self.a_cd_rip.setEnabled(not busy)
+        for a in getattr(self, "_macro_actions", []):           # 2.0
+            if a.objectName().startswith("macro:"):
+                a.setEnabled(has and not busy and self.mrec is None)
         for k, a in self.fx_actions.items():
             a.setEnabled(has and not busy and (k != "take_noise" or sel))
+        self.a_spectral.setEnabled(has)
+        if getattr(self, "se_panel", None) is not None:
+            self.se_panel._sync()
         for key in ("fx_eq", "fx_nr"):
             self.tb[key].setEnabled(has and not busy)
         self.a_to_mono.setEnabled(has and not busy and d.channels == 2)
@@ -2129,9 +2482,11 @@ class MainWindow(QMainWindow):
         self.stats_dlg.refresh()
 
     # ── settings, about, updates ──────────────────────────────
-    def settings_dialog(self) -> None:
+    def settings_dialog(self, page: str = "", scan: bool = False) -> None:
         from .dialogs import SettingsDialog
-        dlg = SettingsDialog(self.cfg, self)
+        dlg = SettingsDialog(self.cfg, self, page=page)
+        if scan:
+            dlg.vst.start_scan(False)
         before = (self.cfg.get("language"), self.cfg.get("theme"), self.cfg.get("look"))
         if dlg.exec():
             dlg.apply()
@@ -2223,6 +2578,16 @@ class MainWindow(QMainWindow):
         if paths:
             self.open_paths(paths)
 
+    # ── the listening volume (2.0) ────────────────────────────
+    def _volume_changed(self) -> None:
+        self.a_mute.setChecked(self.volume.muted)
+        self._vol_save.start()
+
+    def _save_volume(self) -> None:
+        self.cfg["play_volume_db"] = round(self.volume.db, 1)
+        self.cfg["play_muted"] = self.volume.muted
+        config.save(self.cfg)
+
     def closeEvent(self, ev) -> None:
         if self.batch_win is not None:
             if self.batch_win._running() and \
@@ -2254,6 +2619,10 @@ class MainWindow(QMainWindow):
         self.spec_panel.cancel()
         self.wave.close_engine()
         self.player.stop()
+        if self.video_win is not None:
+            self.video_win.close()
+        self.cfg["play_volume_db"] = round(self.volume.db, 1)
+        self.cfg["play_muted"] = self.volume.muted
         self.cfg["side_split"] = self.side_split.sizes()
         self.cfg["main_split"] = self.splitter.sizes()
         self.cfg["geometry"] = bytes(self.saveGeometry().toHex()).decode()

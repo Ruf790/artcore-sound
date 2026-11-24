@@ -1,23 +1,37 @@
 """The effects (0.3): equalizers, dynamics, delay and reverb, tempo and pitch, noise reduction, click removal — each
-with its live preview. base.py is the frame (parameters, stateful processors, render, the preview chain)."""
+with its live preview; 2.0: restoration (repair.py — hum, clipping, de-esser, crackle; adaptive noise reduction), VST3 plugins (vst3.py). base.py is the frame (parameters, stateful processors, render, the preview chain)."""
 from __future__ import annotations
 
 import threading
 
 from .base import Effect, Param, PreviewChain, Processor, render            # noqa: F401
 from .dynamics import Compressor, Limiter
+from .channels import ChannelMatrix, DialogBoost
 from .eq import GraphicEQ, ParametricEQ
-from .restore import Declick, NoiseReduction, noise_profile, scan_clicks   # noqa: F401
+from .repair import Declip, Decrackle, Deess, Dehum, detect_hum, scan_clips      # noqa: F401
+from .restore import AutoNoiseReduction, Declick, NoiseReduction, noise_profile, scan_clicks   # noqa: F401
 from .space import Delay, Reverb
 from .tempo import TempoPitch
+from .vst3 import VstEffect
 
-ORDER = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick")
+ORDER = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick", "chmatrix", "dialog",
+         "nr_auto", "decrackle", "declip", "dehum", "deess")
+FILM = ("chmatrix", "dialog")          # 2.0: in the Film menu, not Effects
+RESTORE = ("nr", "nr_auto", "declick", "decrackle", "declip", "dehum", "deess")   # 2.0: the Restoration menu
+
+
 _classes = {c.key: c for c in (ParametricEQ, GraphicEQ, Compressor, Limiter, Delay, Reverb, TempoPitch,
-                               NoiseReduction, Declick)}
+                               NoiseReduction, Declick, ChannelMatrix, DialogBoost, AutoNoiseReduction, Decrackle,
+                               Declip, Dehum, Deess)}
 EFFECTS: dict[str, Effect] = {k: _classes[k]() for k in ORDER}
 
 
+VST3 = VstEffect()                    # 2.0: every VST3 plugin (which one is in its values) — not in ORDER's menus
+
+
 def get(key: str) -> Effect:
+    if key == "vst3":
+        return VST3
     return EFFECTS[key]
 
 

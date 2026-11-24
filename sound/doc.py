@@ -146,6 +146,7 @@ class Document:
     track: object = None                         # ff.Track that was opened
     save_format: str = ""                        # the format Save writes without asking (export.FORMATS key)
     save_opts: dict = field(default_factory=dict)
+    film: dict = field(default_factory=dict)     # 2.0: the video it was opened from {"path", "track", "index", "fps"}
     sel: tuple | None = None                     # (start, end) frames, end exclusive
     cursor: int = 0
     view_start: float = 0.0                      # the first frame at the left edge of the wave view
@@ -161,6 +162,7 @@ class Document:
         self.markers: tuple = ()                  # Marker, sorted by time
         self.mversion = 0                         # changes with every change of the markers
         self.saved_id = 0
+        self.spec_sel = None                      # 2.0: the spectral selection (spectral.SpecSel), not in the history
         self.orphans: list = []                   # sources only the discarded redo branch used (the window deletes
         self.zero = Source.zero(self.channels)    # them once no clipboard or other document holds them either)
         if not self.labels:
@@ -569,6 +571,36 @@ class Document:
             if m.end is not None:
                 pts.add(m.end)
         return sorted(pts)
+
+    # ── 2.0: a copy to work on (a macro runs on it in a thread) ─────────────
+    def clone(self) -> "Document":
+        """The same sound (the same sources — nothing copied), selection, cursor and markers, with a history of
+        its own."""
+        c = Document(rate=self.rate, channels=self.channels, folder=self.folder, labels=tuple(self.labels),
+                     layout=self.layout, name=self.name, path=self.path)
+        c.markers = self.markers
+        c._set(self.pieces)
+        c.sel, c.cursor = self.sel, self.cursor
+        c._push("clone")
+        return c
+
+    def take(self, c: "Document", label: str) -> None:
+        """What a copy (clone()) became, as one step of this history."""
+        self._apply(label, c.pieces, sel=c.sel, cursor=c.cursor, markers=c.markers, rate=c.rate,
+                    channels=c.channels, labels=tuple(c.labels), layout=c.layout)
+
+    def drop_clone(self, c: "Document") -> int:
+        """The working files a copy made that this document does not use (its steps in between) deleted.
+        → how many."""
+        from .store import delete_source
+        mine = {id(s) for s in self.sources()}
+        n = 0
+        for s in c.sources():
+            if s.kind == "data" and id(s) not in mine:
+                delete_source(s)
+                n += 1
+        c.history, c.pos = [], -1
+        return n
 
     def sources(self) -> set:
         """Every source the history still uses (the working files to keep)."""

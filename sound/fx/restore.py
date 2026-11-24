@@ -194,6 +194,91 @@ class NoiseReduction(Effect):
         self.profile = None                 # noise_profile(), taken by «Take a noise sample» (for the session)
 
 
+# ── adaptive noise reduction (2.0) ────────────────────────────
+# The same gate with no noise sample: the noise of each bin is followed as the sound goes (minimum statistics,
+# R. Martin 2001): the power smoothed over time, its minimum over the last `window` seconds (kept as U sub-windows,
+# so the oldest drops out a piece at a time), times a bias — speech and music fall to the noise floor now and then
+# in every bin, the noise never rises over it. «Voice»: a short window (the noise followed closely, pauses are
+# short); «music»: a long one (a held note is not taken for noise) and a slower, gentler gate.
+MS_RISE = 0.9                   # the smoothing of the power on the way up …
+MS_FALL = 0.7                   # … and down: a short pause reaches the noise floor
+MS_SUBS = 8
+AUTO_MODES = {
+    # bias: the mean noise power over the minimum of the smoothed one (measured on white noise), so the estimate is the
+    # noise's mean power as a noise sample gives it and the sensitivity means the same in both
+    "voice": {"window": 1.0, "bias": 5.1, "smooth_f": 200.0, "smooth_t": 30.0, "attack": 15.0, "release": 150.0},
+    "music": {"window": 3.0, "bias": 6.4, "smooth_f": 120.0, "smooth_t": 50.0, "attack": 30.0, "release": 300.0},
+}
+
+
+class AutoNoiseProc(NoiseProc):
+    def configure(self, old: dict) -> None:
+        mode = AUTO_MODES.get(self.p.get("mode"), AUTO_MODES["voice"])
+        self.p = {**mode, **self.p}
+        super().configure(old)
+        fps = self.rate / self.hop
+        self.sub_len = max(1, int(math.ceil(mode["window"] * fps / MS_SUBS)))
+        bins = self.n // 2 + 1
+        if not old:
+            self.ms_p = None
+            self.cur_min = np.full((self.ch, bins), np.inf)
+            self.subs = np.full((MS_SUBS, self.ch, bins), np.inf)
+            self.subs_min = np.full((self.ch, bins), np.inf)
+            self.sub_i = 0
+            self.sub_n = 0
+        self.noise = self.subs_min                     # not None: the gate works (on the noise followed)
+
+    def noise_now(self) -> np.ndarray:
+        return self.p["bias"] * np.minimum(self.subs_min, self.cur_min)
+
+    def _gates(self, spec: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        out = np.empty(spec.shape)
+        strong = np.zeros(spec.shape, bool)
+        pw = spec.real ** 2 + spec.imag ** 2
+        a = self.t_alpha
+        for i in range(len(spec)):
+            if self.ms_p is None:
+                self.ms_p = pw[i].copy()
+            else:
+                al = np.where(pw[i] > self.ms_p, MS_RISE, MS_FALL)
+                self.ms_p = al * self.ms_p + (1 - al) * pw[i]
+            self.cur_min = np.minimum(self.cur_min, self.ms_p)
+            self.sub_n += 1
+            if self.sub_n >= self.sub_len:
+                self.subs[self.sub_i] = self.cur_min
+                self.sub_i = (self.sub_i + 1) % MS_SUBS
+                self.subs_min = self.subs.min(axis=0)
+                self.cur_min = np.full_like(self.cur_min, np.inf)
+                self.sub_n = 0
+            thr = self.noise_now() * self.thr
+            self.p_smooth = a * self.p_smooth + (1 - a) * pw[i] if a else pw[i]
+            gate = np.where(self.p_smooth > thr, 0.0, -self.red)
+            self.g_rel = np.maximum(gate, self.g_rel - self.rel_step)
+            out[i] = self.g_rel
+            strong[i] = pw[i] > thr * STRONG
+        self.noise = self.subs_min
+        return out, strong
+
+
+class AutoNoiseReduction(Effect):
+    key = "nr_auto"
+    name = "fx_nr_auto"
+    MAX_ATTACK = 100.0
+    profile = None
+    params = [Param("mode", "choice", default="voice", choices=(("voice", "na_voice"), ("music", "na_music")),
+                    label="na_mode"),
+              Param("reduction", lo=0.0, hi=48.0, default=12.0, unit="dB", decimals=1, label="nr_reduction"),
+              Param("sensitivity", lo=0.0, hi=24.0, default=6.0, unit="dB", decimals=1, label="nr_sensitivity"),
+              Param("residual", "bool", default=False, label="nr_residual")]
+    proc_class = AutoNoiseProc
+    presets = {
+        "pr_light": {"reduction": 8.0},
+        "pr_medium": {},
+        "pr_strong": {"reduction": 20.0, "sensitivity": 8.0},
+        "pr_na_music": {"mode": "music", "reduction": 9.0, "sensitivity": 5.0},
+    }
+
+
 # ── click removal ─────────────────────────────────────────────
 ORDER = 24
 BLOCK = 4096

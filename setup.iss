@@ -3,7 +3,7 @@
 ; Expects the PyInstaller output (with ffmpeg\ inside) in dist\ArtCoreSound\.
 
 #define AppName      "ArtCore Sound"
-#define AppVersion   "1.0.0"
+#define AppVersion   "2.0.0"
 #define AppPublisher "ArtCore"
 #define AppURL       "https://github.com/Ruf790/artcore-sound"
 #define AppExe       "ArtCoreSound.exe"
@@ -70,6 +70,8 @@ Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExe}"; Tasks: desktopic
 [Registry]
 ; HKA = HKLM for "all users", HKCU for "just me". «Open with» only — no file type is taken over.
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
+; 2.0: where the exe is, for «Open in ArtCore Sound» in ArtCore Convert and ArtCore Music (with or without «Open with»)
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#AppExe}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: openwith
 ; every format the editor opens (sound/__init__.py: AUDIO_EXT + VIDEO_EXT; a test keeps the two lists equal)
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".wav"; ValueData: ""; Tasks: openwith

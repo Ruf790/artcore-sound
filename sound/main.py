@@ -55,7 +55,9 @@ def selftest() -> int:
     the 440 Hz tone, a spectrogram tile, markers and regions written into a WAV (cue / labl) and read back and kept
     by an edit, a recording through the null input, and a WASAPI input stream opened (or a clear word that there is
     no input device). 1.0: a batch of 3 files in worker processes of the exe, a long Cyrillic path, the crash
-    journal, the error report."""
+    journal, the error report. 2.0: the listening volume (−12 dB heard, the meters unchanged, the file untouched); the film tools (return to
+    video with E-AC-3 / DTS, the automatic sync, Pro Logic II, libmpv); restoration; VST3 through the exe's own plugin
+    host (pedalboard)."""
     import tempfile
     import time
     import traceback
@@ -201,6 +203,7 @@ def selftest() -> int:
             x.mark_saved()
         win.close()
         _selftest_10(src, session, tmp, lines)
+        _selftest_20(src, session, tmp, lines)
         session.close()
         with open(out, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -423,6 +426,346 @@ def _tp_of(src, rate: int, labels) -> float:
         an.feed(src.read(pos, k))
         pos += k
     return an.result().true_peak
+
+
+def _selftest_20(src, session, tmp: str, lines: list) -> None:
+    """2.0: the listening volume — the null output 12 dB quieter, the meters still the file's level, the file not
+    touched; then the input monitor of the Record window at the same volume."""
+    import time
+
+    import numpy as np
+
+    from . import media, record
+    from .player import InputMonitor, Player, Volume
+    src = media.open_file(src, session.folder()) if isinstance(src, str) else src
+
+    def capture(vol):
+        blocks = []
+        p = Player(volume=vol)
+        p.sink = blocks.append
+        if not p.play(src, 0, src.frames):
+            raise RuntimeError("the null playback")
+        time.sleep(0.5)
+        lv = p.levels().copy()
+        p.stop()
+        y = np.concatenate(blocks[2:-1])
+        return float(np.sqrt(np.mean(np.square(y, dtype=np.float64)))), lv
+
+    before = src.read(0, 65536).copy()
+    r0, lv0 = capture(Volume(0))
+    r1, lv1 = capture(Volume(-12))
+    db = 20 * np.log10(max(1e-12, r1) / max(1e-12, r0))
+    same = float(np.max(np.abs(lv0 - lv1)))
+    lines.append(f"listening volume: −12 dB set → {db:.2f} dB heard; meters differ by {same:.4f}")
+    if abs(db + 12) > 0.2 or same > 0.02 or not np.array_equal(src.read(0, 65536), before):
+        raise RuntimeError("the listening volume")
+    r = record.Recorder()
+    devs = [d for d in record.input_devices() if d.get("null")] or [{"null": True, "name": "null"}]
+    blocks = []
+    m = InputMonitor(volume=Volume(-6))
+    m.sink = blocks.append
+    if not r.open(devs[0], 2, 48000) or not m.open(48000, 2):
+        raise RuntimeError("the input monitor")
+    r.monitor = m
+    time.sleep(0.4)
+    r.monitor = None
+    m.close()
+    r.close()
+    pk = float(np.max(np.abs(np.concatenate(blocks[4:-1])[:, 0]))) if len(blocks) > 6 else 0.0
+    mdb = 20 * np.log10(max(1e-9, pk) / 0.25)
+    lines.append(f"input monitor: −6 dB set → {mdb:.2f} dB heard")
+    if abs(mdb + 6) > 0.3:
+        raise RuntimeError("the input monitor's volume")
+    _selftest_film(session, tmp, lines)
+    _selftest_restore(session, tmp, lines)
+    _selftest_vst3(session, tmp, lines)
+    _selftest_cd(session, tmp, lines)
+
+
+def _selftest_vst3(session, tmp: str, lines: list) -> None:
+    """2.0 block 3: pedalboard inside the exe; with ARTCORE_TESTPLUG (CI builds tools/testplug) the plugin host is the
+    exe itself: a scan, 5.1 in pairs with +6 dB, the plugin's latency made up for, a plugin that crashes — the
+    program goes on and the document stays."""
+    import shutil
+    import time
+
+    import numpy as np
+
+    from . import fx, store
+    from .doc import Document
+    from .vst import client, scan
+    try:
+        import pedalboard
+    except ImportError as e:
+        raise RuntimeError(f"pedalboard is missing: {e}") from None
+    lines.append(f"pedalboard {pedalboard.__version__}")
+    plug = os.environ.get("ARTCORE_TESTPLUG", "")
+    if not plug or not os.path.exists(plug):
+        lines.append("VST3: no test plugin (ARTCORE_TESTPLUG) — the host not checked")
+        return
+    folder = os.path.join(tmp, "vst3")
+    shutil.rmtree(folder, ignore_errors=True)
+    shutil.copytree(plug, os.path.join(folder, os.path.basename(plug)))
+    lib = scan.Library({"vst3_folders": [folder]})
+    n, bad = lib.scan(force=True)
+    names = sorted(p.name for p in lib.plugins())
+    lines.append(f"VST3 scan: {n} plugins, {bad} not loaded: {names}")
+    for f in lib.failed():
+        lines.append(f"  not loaded: {f.path}: {f.reason} {f.detail}")
+    if n != 2 or bad:                                  # what pedalboard says of the plugin itself, three ways
+        inner = os.path.join(plug, "Contents", "x86_64-win", os.path.basename(plug))
+        for what in (plug, scan.long_path(os.path.join(folder, os.path.basename(plug))), inner):
+            try:
+                names = pedalboard.VST3Plugin.get_plugin_names_for_file(what)
+                pedalboard.load_plugin(what, plugin_name=names[0])
+                lines.append(f"  pedalboard loads {what}: {names}")
+            except Exception as e:                       # noqa: BLE001
+                lines.append(f"  pedalboard fails on {what}: {type(e).__name__}: {e}")
+        raise RuntimeError("the VST3 scan")
+    p = next(p for p in lib.plugins() if p.name == "ArtCore Test Plug Latency")
+    rate = 48000
+    x = (np.random.default_rng(3).standard_normal((3 * rate, 6)) * 0.1).astype(np.float32)
+    d = Document(rate=rate, channels=6, folder=session.folder(), labels=("L", "R", "C", "LFE", "Ls", "Rs"),
+                 layout="5.1")
+    d.set_initial(store.from_array(d.folder, x))
+    t0 = time.monotonic()
+    src = fx.render(d, 0, d.frames, fx.get("vst3"), {"plugin": p.ref(), "mode": "pairs",
+                                                       "params": {"gain_db": 30.0 / 48.0}})
+    y = src.read(0, src.frames)
+    err = float(np.max(np.abs(y - x * 10 ** (6 / 20))))
+    lines.append(f"VST3 5.1 in pairs, +6 dB, latency 1000: {src.frames} frames, max error {err:.2e}, "
+                 f"{time.monotonic() - t0:.2f} s")
+    if src.frames != d.frames or err > 1e-5:
+        raise RuntimeError("the VST3 render")
+    try:
+        fx.render(d, 0, d.frames, fx.get("vst3"), {"plugin": p.ref(), "params": {"crash": 1.0}})
+        raise RuntimeError("a crashing plugin did not fail")
+    except client.PluginError as e:
+        lines.append(f"VST3 crash isolated: {e.kind}")
+    if not np.array_equal(d.read(0, d.frames), x):
+        raise RuntimeError("the document after the crash")
+
+
+def _selftest_cd(session, tmp: str, lines: list) -> None:
+    """2.0 block 4: Windows' burning service (IMAPI2 through comtypes: the recorders, an IStream over a file); a
+    fake disc ripped (secure, CD-TEXT, a sector that reads wrong once) into the editor with regions and burnt back by
+    a fake recorder — the image's table of contents, CD-TEXT and sound checked."""
+    import json
+    import shutil
+
+    from . import ff as ffm
+    from .cd import burn as cdb
+    from .cd import cdtext, image
+    from .cd import drive as cdd
+    from .cd import rip as cdr
+    if sys.platform == "win32":
+        import comtypes
+        recs = cdb.recorders()
+        lines.append(f"IMAPI2 (comtypes {comtypes.__version__}): {len(recs)} recorders "
+                     f"{[r.name for r in recs]}")
+        probe = os.path.join(tmp, "stream.bin")
+        with open(probe, "wb") as f:
+            f.write(b"\0" * 4096)
+        with cdb._Com():
+            st = cdb._stream(probe, 1)
+            del st
+        lines.append("IStream over a file: OK")
+    folder = os.path.join(tmp, "cd")
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    files = []
+    for i, f0 in enumerate((440, 660)):
+        p = os.path.join(folder, f"t{i + 1}.wav")
+        import subprocess
+        subprocess.run([ffm.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", f"sine=f={f0}:d=4.5:r=44100", "-ac", "2",
+                        "-c:a", "pcm_s16le", p], check=True)
+        files.append(os.path.basename(p))
+    spec = os.path.join(folder, "disc.json")
+    with open(spec, "w", encoding="utf-8") as f:
+        json.dump({"files": files, "gaps": [75], "album": {"title": "Тест", "performer": "ArtCore"},
+                   "tracks": [{"title": "Первый"}, {"title": "Второй"}], "flaky": [40]}, f, ensure_ascii=False)
+    dr = cdd.FakeDrive.from_file(spec)
+    toc = dr.read_toc()
+    meta = cdr.Meta.from_cdtext(dr.read_cdtext(), 2)
+    docs, res = cdr.rip(dr, toc, [1, 2], meta, cdr.Options(secure=True), session.folder, "disc")
+    d = docs[0]
+    lines.append(f"CD rip (fake): {len(toc.audio)} tracks, MusicBrainz {toc.musicbrainz_id()}, CRC {res[0].crc}, "
+                 f"re-read {res[0].reread}, regions {[m.name for m in d.markers]}")
+    if [m.name for m in d.markers] != ["Первый", "Второй"] or res[0].reread < 1 or res[0].suspicious:
+        raise RuntimeError("the CD rip")
+    plan = cdb.Plan(cdb.tracks_of(d, "regions"), gap=1.0, album=meta.album, performer=meta.artist)
+    toc2, img = cdb.make_image(d, plan, session.folder())
+    r = image.read(img)
+    text = cdtext.decode(r.packs)
+    ok_audio = image.read_audio(img, toc2.track(2).start, toc2.track(2).length) == \
+        dr.pcm[toc.track(2).start * 2352:(toc.track(2).start + toc.track(2).length) * 2352]
+    lines.append(f"CD image: {r.sectors} sectors, Q CRC errors {r.bad_q}, CD-TEXT {text.album} "
+                 f"{[x.get('title') for x in text.tracks]}, track 2 bit for bit: {ok_audio}")
+    if r.bad_q or text.album.get("title") != "Test" or not ok_audio:
+        raise RuntimeError("the CD image")
+    os.remove(img)
+    d.close()
+
+
+def _selftest_film(session, tmp: str, lines: list) -> None:
+    """2.0 block 1: a film (H.264 + AC-3 5.1 + subtitles) — its track replaced by E-AC-3 and DTS and checked;
+    the automatic sync of a delayed copy; the Pro Logic II downmix; libmpv loaded and the film opened in it."""
+    import time
+
+    import numpy as np
+
+    from . import chans, ff, film, media, sync
+    exe = ff.ffmpeg()
+    src = os.path.join(tmp, "Фильм.mkv")
+    srt = os.path.join(tmp, "s.srt")
+    with open(srt, "w", encoding="utf-8") as f:
+        f.write("1\n00:00:00,500 --> 00:00:02,000\nПривет\n")
+    r = ff.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=160x120:r=25:d=6", "-f", "lavfi", "-i",
+                "aevalsrc='0.4*sin(2*PI*440*t)*gt(mod(t,0.7),0.5)':s=48000:d=6", "-i", srt, "-filter_complex",
+                "[1]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0[a]", "-map", "0:v", "-map", "[a]", "-map", "2",
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "ac3", "-c:s", "srt", src], 120)
+    if r.returncode != 0:
+        raise RuntimeError("making the film failed: " + r.stderr[-300:])
+    d = media.open_file(src, session.folder(), 0)
+    for codec in ("eac3", "dts"):
+        out = os.path.join(tmp, f"Фильм {codec}.mkv")
+        res = film.return_to_video(d, film.Options(replace_index=d.film["index"], codec=codec, lang="rus",
+                                                   title="Дубляж", out_path=out))
+        lines.append(f"return to video ({codec}): {res.streams}, track {res.track + 1} {res.codec} "
+                     f"{res.channels} ch {res.duration:.2f} s")
+    shifted = media.open_file(src, session.folder(), 0)
+    sync.shift(shifted, int(0.3 * shifted.rate))
+    est = sync.estimate(sync.envelope_of_doc(d), sync.envelope_of_doc(shifted), speeds=False, window_s=2.0)
+    lines.append(f"auto sync: {est.offset * 1000:+.1f} ms (0.3 s delayed copy), confidence {est.confidence:.2f}")
+    if abs(est.offset - 0.3) > 0.015:
+        raise RuntimeError("the automatic sync")
+    pl2 = chans.convert(d, 2, "pl2")
+    y = pl2.read(0, pl2.frames)
+    lines.append(f"Pro Logic II: {pl2.frames} frames, peak {np.abs(y).max():.3f}")
+    from .videoui import load_mpv, mpv_error
+    mpv = load_mpv()
+    if mpv is None:
+        lines.append(f"libmpv: not available ({mpv_error()[:80]}) — the video window shows still frames")
+        if getattr(sys, "frozen", False):
+            raise RuntimeError("libmpv-2.dll is missing from the build")
+        return
+    p = mpv.MPV(vo="null", aid="no", audio="no", pause=True, config=False, terminal=False, idle="yes")
+    try:
+        p.play(src)
+        t0 = time.monotonic()
+        while (p.duration is None) and time.monotonic() - t0 < 15:
+            time.sleep(0.05)
+        p.command("seek", 2.0, "absolute+exact")
+        t0 = time.monotonic()
+        while (p.time_pos is None or abs(p.time_pos - 2.0) > 0.05) and time.monotonic() - t0 < 15:
+            time.sleep(0.05)
+        lines.append(f"libmpv {p.mpv_version}: the film opened, {p.duration:.2f} s, at {p.time_pos:.2f} s")
+        if p.duration is None or abs((p.time_pos or 0) - 2.0) > 0.05:
+            raise RuntimeError("libmpv did not seek")
+    finally:
+        p.terminate()
+
+
+def _selftest_restore(session, tmp: str, lines: list) -> None:
+    """2.0 block 2: every restoration effect on sound made for it (hum, clipping, sibilance, crackle, noise) — what
+    it takes away and what it keeps, measured; a tone erased by spectral editing, the rest untouched; a film's 5.1
+    returned with a stereo track, every channel in its place."""
+    import numpy as np
+
+    from . import film, fx, media, spectral, store
+    from .doc import Document
+    rate = 48000
+    t = np.arange(4 * rate) / rate
+    rng = np.random.default_rng(1)
+
+    def doc(x):
+        x = np.asarray(x, np.float32)
+        x = x[:, None] if x.ndim == 1 else x
+        d = Document(rate=rate, channels=x.shape[1], folder=session.folder(), labels=("M",) * x.shape[1])
+        d.set_initial(store.from_array(d.folder, x))
+        return d
+
+    def run(key, x, values):
+        d = doc(x)
+        src = fx.render(d, 0, d.frames, fx.get(key), values)
+        return src.read(0, src.frames)[:, 0].astype(np.float64)
+
+    def amp(y, f, sl):
+        m = np.stack((np.sin(2 * np.pi * f * t[sl]), np.cos(2 * np.pi * f * t[sl])), axis=1)
+        return float(np.hypot(*np.linalg.lstsq(m, y[sl], rcond=None)[0]))
+
+    sl = slice(rate, 3 * rate)
+    mus = 0.25 * np.sin(2 * np.pi * 220 * t)
+    hum = 0.03 * np.sin(2 * np.pi * 50.1 * t) + 0.02 * np.sin(2 * np.pi * 150.3 * t)
+    y = run("dehum", mus + hum, {})
+    cut = 20 * np.log10(amp(hum, 50.1, sl) / max(1e-12, amp(y, 50.1, sl)))
+    keep = 20 * np.log10(amp(y, 220, sl) / 0.25)
+    lines.append(f"de-hum: 50.1 Hz down {cut:.1f} dB, the music {keep:+.2f} dB")
+    if cut < 20 or abs(keep) > 0.3:
+        raise RuntimeError("de-hum")
+    x = 0.5 * np.sin(2 * np.pi * 330 * t) + 0.35 * np.sin(2 * np.pi * 550 * t + 1)
+    c = np.clip(x, -0.55, 0.55)
+    y = run("declip", c, {"headroom": 0.0})
+    hot = np.abs(c) >= 0.55
+    gain = np.sqrt(np.mean((c[hot] - x[hot]) ** 2)) / np.sqrt(np.mean((y[hot] - x[hot]) ** 2))
+    lines.append(f"clipping repair: the error at the clipped samples {20 * np.log10(gain):.1f} dB smaller")
+    if gain < 4:
+        raise RuntimeError("clipping repair")
+    from scipy import signal
+    sos = signal.butter(4, [5000, 9000], btype="bandpass", fs=rate, output="sos")
+    ss = signal.sosfilt(sos, rng.standard_normal(len(t)))
+    ss = 0.6 * ss / np.abs(ss).max() * ((t % 1.0) > 0.6)
+    v = 0.3 * np.sin(2 * np.pi * 180 * t)
+    y = run("deess", v + ss, {"freq": 6500.0, "threshold": -30.0, "reduction": 12.0})
+    hi = 20 * np.log10(np.std(signal.sosfilt(sos, v + ss)) / np.std(signal.sosfilt(sos, y)))
+    lines.append(f"de-esser: the sibilance down {hi:.1f} dB")
+    if hi < 5:
+        raise RuntimeError("de-esser")
+    cr = np.zeros(len(t))
+    pos = rng.integers(10, len(t) - 10, 2000)
+    cr[pos] = rng.uniform(0.03, 0.15, len(pos)) * rng.choice((-1, 1), len(pos))
+    y = run("decrackle", mus + cr, {"sensitivity": 60.0})
+    dcr = 20 * np.log10(np.std(cr) / np.std(y - mus))
+    lines.append(f"crackle removal: the crackle down {dcr:.1f} dB")
+    if dcr < 8:
+        raise RuntimeError("crackle removal")
+    on = (t % 1.0) < 0.5
+    tone = 0.3 * np.sin(2 * np.pi * 700 * t) * on
+    noise = 0.02 * rng.standard_normal(len(t))
+    y = run("nr_auto", tone + noise, {"reduction": 18.0})
+    gaps = (~on) & (t > 2.0) & ((t % 1.0) > 0.65) & ((t % 1.0) < 0.95)
+    dn = 20 * np.log10(np.std(noise[gaps]) / np.std(y[gaps]))
+    lines.append(f"adaptive noise reduction: the noise in the pauses down {dn:.1f} dB")
+    if dn < 10:
+        raise RuntimeError("adaptive noise reduction")
+    tone3 = 0.2 * np.sin(2 * np.pi * 3000 * t) * ((t >= 1.0) & (t < 2.0))
+    d = doc(mus + tone3)
+    sel = spectral.SpecSel(rate, "log", (0,), [spectral.Shape("rect", [(int(0.95 * rate), 2500.0),
+                                                                         (int(2.05 * rate), 3600.0)])])
+    a, b, src = spectral.apply(d, sel, spectral.Params(action="erase"))
+    y = d.read(0, d.frames)[:, 0].astype(np.float64)
+    y[a:b] = src.read(0, src.frames)[:, 0]
+    left = amp(y, 3000, slice(int(1.1 * rate), int(1.9 * rate)))
+    same = np.array_equal(y[:a], d.read(0, a)[:, 0].astype(np.float64))
+    lines.append(f"spectral edit: the tone {20 * np.log10(max(1e-12, left) / 0.2):.0f} dB, outside untouched {same}")
+    if left > 1e-3 or not same:
+        raise RuntimeError("spectral editing")
+    # a film's 5.1 with a stereo track: a tone of its own in each channel, each found in its place
+    freqs = (310, 530, 730, 60, 1110, 1330)
+    tones = np.stack([0.2 * np.sin(2 * np.pi * f * t[:3 * rate]) for f in freqs], axis=1).astype(np.float32)
+    d6 = Document(rate=rate, channels=6, folder=session.folder(), labels=("L", "R", "C", "LFE", "Ls", "Rs"),
+                  layout="5.1(side)")
+    d6.set_initial(store.from_array(d6.folder, tones))
+    d6.film = {"path": os.path.join(tmp, "Фильм.mkv"), "track": 0, "index": 1, "fps": 25}
+    out = os.path.join(tmp, "Фильм stereo.mkv")
+    res = film.return_to_video(d6, film.Options(replace_index=1, codec="ac3", out_path=out, stereo="itu",
+                                                stereo_title="stereo"))
+    e = media.open_file(out, session.folder(), 0)
+    x = e.read(rate // 2, rate).astype(np.float64) * np.hanning(rate)[:, None]
+    got = [int(np.argmax(np.abs(np.fft.rfft(x[:, k])))) for k in range(6)]
+    lines.append(f"return to video, 5.1 + stereo: tracks {res.streams['audio']}, the tones at {got}")
+    if got != list(freqs) or res.stereo_track != res.track + 1:
+        raise RuntimeError("the channels of the returned film")
 
 
 def main() -> int:

@@ -36,8 +36,10 @@ NOISE_EXT = ".acnoise"
 
 # ── the steps ─────────────────────────────────────────────────
 PROCESS_STEPS = ("gain", "normalize", "dc", "trim_silence", "fades", "channels", "rate")
-FX_STEPS = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick")
-STEP_KINDS = PROCESS_STEPS + FX_STEPS
+FX_STEPS = ("eq", "geq", "comp", "limit", "delay", "reverb", "tempo", "nr", "declick", "chmatrix", "dialog",
+            "nr_auto", "decrackle", "declip", "dehum", "deess", "vst3")
+MACRO_STEPS = ("macro",)            # 2.0: a macro (macro.py) as one step — its steps kept in the step
+STEP_KINDS = PROCESS_STEPS + FX_STEPS + MACRO_STEPS
 STEP_TITLES = {"gain": "p_gain", "normalize": "p_normalize", "dc": "p_dc", "trim_silence": "p_trim_silence",
                "fades": "bs_fades", "channels": "p_channels", "rate": "p_resample"}
 
@@ -65,7 +67,10 @@ def _params() -> dict:
                            ("scurve", "curve_scurve")),
                   label="bs_curve")],
         "channels": [Param("channels", "choice", default=2,
-                           choices=((1, "ch_mono"), (2, "ch_stereo"), (6, "bs_ch_51")), label="chn_to")],
+                           choices=((1, "ch_mono"), (2, "ch_stereo"), (6, "bs_ch_51")), label="chn_to"),
+                     Param("method", "choice", default="auto",
+                           choices=(("auto", "mx_plain"), ("itu", "mx_itu"), ("loro", "mx_loro"), ("pl2", "mx_pl2"),
+                                    ("upmix", "mx_upmix")), label="mx_method")],
         "rate": [Param("rate", "choice", default=48000,
                        choices=tuple((r, f"{r} Hz") for r in (8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200,
                                                              96000, 176400, 192000)), label="rs_rate")],
@@ -77,6 +82,8 @@ _P: dict | None = None
 
 def step_params(kind: str) -> list:
     global _P
+    if kind == "macro":
+        return []
     if kind in FX_STEPS:
         from . import fx
         return fx.get(kind).params
@@ -86,6 +93,11 @@ def step_params(kind: str) -> list:
 
 
 def step_defaults(kind: str) -> dict:
+    if kind == "macro":
+        return {"name": "", "steps": []}
+    if kind == "vst3":                              # 2.0: which plugin, its state, the channels
+        from . import fx
+        return {**fx.get("vst3").defaults(), "keep_tail": True}
     v = {p.key: p.default for p in step_params(kind)}
     if kind == "nr":
         v["profile"] = ""
@@ -96,6 +108,20 @@ def step_defaults(kind: str) -> dict:
 
 def clean_values(kind: str, values: dict | None) -> dict:
     values = values or {}
+    if kind == "macro":
+        from . import macro
+        steps = []
+        for st in values.get("steps") or []:
+            try:
+                s = st if isinstance(st, macro.Step) else macro.Step.from_dict(st)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if s.kind != "macro":                       # not a macro in a macro
+                steps.append(s.to_dict())
+        return {"name": str(values.get("name") or ""), "steps": steps}
+    if kind == "vst3":
+        from . import fx
+        return {**fx.get("vst3").clean(values), "keep_tail": bool(values.get("keep_tail", True))}
     out = {p.key: p.clean(values.get(p.key, p.default)) for p in step_params(kind)}
     if kind == "nr":
         out["profile"] = str(values.get("profile") or "")
@@ -117,6 +143,10 @@ class Step:
 
     def title(self) -> str:
         from .i18n import t
+        if self.kind == "vst3":
+            return "VST3: " + (self.values["plugin"].get("name") or "?")
+        if self.kind == "macro":
+            return t("bs_macro") + ": " + (self.values["name"] or "?")
         if self.kind in FX_STEPS:
             from . import fx
             return t(fx.get(self.kind).name)
@@ -138,7 +168,8 @@ class Step:
         if k == "fades":
             return t("bs_sum_fades", f"{v['fade_in']:.0f}", f"{v['fade_out']:.0f}")
         if k == "channels":
-            return {1: t("ch_mono"), 2: t("ch_stereo"), 6: "5.1"}[v["channels"]]
+            base = {1: t("ch_mono"), 2: t("ch_stereo"), 6: "5.1"}[v["channels"]]
+            return base if v.get("method", "auto") == "auto" else f"{base}, {t('mx_' + v['method'])}"
         if k == "rate":
             return f"{v['rate']} Hz"
         if k == "nr":
@@ -146,6 +177,13 @@ class Step:
         if k == "tempo":
             from . import fx
             return fx.get(k).label(v)
+        if k == "macro":
+            return t("mc_n_steps", len(v["steps"]))
+        if k == "vst3":
+            parts = [v["plugin"].get("maker", "")]
+            if v["mode"] != "auto":
+                parts.append(t("vst_mode_" + v["mode"]))
+            return ", ".join(x for x in parts if x)
         return ""
 
     def to_dict(self) -> dict:
@@ -491,14 +529,33 @@ def _drop_history(d) -> None:
         delete_source(s)
 
 
-def apply_step(d, step: Step, progress, notes: list | None = None, profiles: dict | None = None) -> None:
-    """One step over the whole document (as the menu command with nothing selected)."""
+def apply_step(d, step: Step, progress, notes: list | None = None, profiles: dict | None = None,
+               source: str = "") -> None:
+    """One step over the whole document (as the menu command with nothing selected). source: the file it came
+    from (a macro's «save» step names its file after it)."""
     from . import ff, fx, proc
     from .i18n import t
     k, v = step.kind, step.values
     notes = notes if notes is not None else []
     n = d.frames
     if n <= 0:
+        return
+    if k == "macro":
+        from . import macro
+        d.sel = None
+        ctx = macro.Context(source)
+        try:
+            macro.run(d, [macro.Step.from_dict(x) for x in v["steps"]], progress, ctx)
+        except Exception as e:
+            from .media import Cancelled
+            if isinstance(e, Cancelled):
+                raise
+            raise RuntimeError(t("bt_err_macro", v["name"], str(e) or type(e).__name__)) from e
+        d.sel = None
+        notes.extend(dict.fromkeys(ctx.notes))
+        for p in ctx.saved:
+            notes.append(t("mc_saved_files", os.path.basename(p)))
+        _drop_history(d)
         return
     if k == "gain":
         if v["db"]:
@@ -534,7 +591,8 @@ def apply_step(d, step: Step, progress, notes: list | None = None, profiles: dic
         ch = int(v["channels"])
         if ch != d.channels:
             lay = ff.layout_for(ch)
-            src = proc.convert_document(d, d.rate, ch, lay, progress)
+            from . import chans
+            src = chans.convert(d, ch, v.get("method", "auto"), progress)
             d.replace(0, n, src, "channels", channels=ch, layout=lay, labels=tuple(ff.labels(ch, lay)))
     elif k == "rate":
         rate = int(v["rate"])
@@ -542,7 +600,7 @@ def apply_step(d, step: Step, progress, notes: list | None = None, profiles: dic
             d.replace(0, n, proc.convert_document(d, rate, d.channels, d.layout, progress), "rate", rate=rate)
     else:
         eff = fx.get(k)
-        values = {p.key: v[p.key] for p in eff.params}
+        values = eff.clean(v) if k == "vst3" else {p.key: v[p.key] for p in eff.params}
         if k == "nr":
             path = v.get("profile") or ""
             if not path:
@@ -626,7 +684,7 @@ def run_task(task: dict, job: dict, session, cancel_ev, pause_ev=None, report=la
         per = w_steps / max(1, len(steps))
         notes = list(task.get("notes") or [])
         for s in steps:
-            apply_step(d, s, proc.SubProgress(ctl, pos, pos + per), notes, profiles)
+            apply_step(d, s, proc.SubProgress(ctl, pos, pos + per), notes, profiles, task["src"])
             pos += per
         if jb.measure:
             task["after"] = measure(d, proc.SubProgress(ctl, pos, pos + w_meas))

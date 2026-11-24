@@ -156,6 +156,8 @@ def open_file(path: str, folder: str, track_pos: int = 0, progress: Progress | N
                  layout=lay, name=os.path.basename(path), path=path, info=info, track=track)
     d.markers = read_markers(path, info, track, src.frames)
     d.set_initial(src)
+    if info.has_video:                 # 2.0: File → Return to video, the video window, frames as a unit
+        d.film = {"path": os.path.abspath(path), "track": track.pos, "index": track.index, "fps": info.fps}
     fmt, opts = format_of(path, track, info)
     d.save_format, d.save_opts = fmt, opts
     return d
@@ -260,14 +262,16 @@ def format_of(path: str, track: ff.Track, info: ff.FileInfo) -> tuple[str, dict]
     return fmt, {"option": opt}
 
 
-def encode_args(fmt: str, option: str, channels: int, rate: int, out_channels: int, out_rate: int) -> list[str]:
-    """ffmpeg's output options (codec, quality, channels, rate) for a format."""
+def encode_args(fmt: str, option: str, channels: int, rate: int, out_channels: int, out_rate: int,
+                dither: bool = True) -> list[str]:
+    """ffmpeg's output options (codec, quality, channels, rate) for a format. dither=False (2.0, a CD rip: the sound
+    is 16-bit already): 16-bit output without the dither, bit for bit."""
     a: list[str] = []
     if out_channels != channels:
         a += ["-ac", str(out_channels)]
     if out_rate != rate:
         a += ["-ar", str(out_rate)]
-    dither = ["-af", "aresample=dither_method=triangular"]
+    dither = ["-af", "aresample=dither_method=triangular"] if dither else []
     if fmt == "wav":
         codec = {"16": "pcm_s16le", "24": "pcm_s24le", "32f": "pcm_f32le"}[option if option in ("16", "24", "32f")
                                                                           else "24"]
@@ -314,7 +318,8 @@ def part_path(path: str, fmt: str) -> str:
 
 
 def save(d: Document, path: str, fmt: str, option: str, progress: Progress | None = None,
-         a: int = 0, b: int | None = None, tags: dict | None = None, markers: bool = True) -> None:
+         a: int = 0, b: int | None = None, tags: dict | None = None, markers: bool = True,
+         dither: bool = True) -> None:
     """Write frames [a, b) of the document (all by default) to path, with its markers and regions in that range
     (marks.py). Goes through a temporary file next to the target, so the old file stays whole if anything
     fails."""
@@ -339,7 +344,7 @@ def save(d: Document, path: str, fmt: str, option: str, progress: Progress | Non
     m_in, m_out = marks.save_args(fmt, items, out_rate, meta_file, os.path.basename(path))
     args = [exe, "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "f32le", "-ar", str(d.rate),
             *ch_layout_args(d.channels, d.layout), "-i", "pipe:0", *m_in,
-            *encode_args(fmt, option, d.channels, d.rate, out_ch, out_rate), *meta, *m_out, "-f", muxer, tmp]
+            *encode_args(fmt, option, d.channels, d.rate, out_ch, out_rate, dither), *meta, *m_out, "-f", muxer, tmp]
     proc = ff.popen(args, stdin=subprocess.PIPE)
     err = _stderr_reader(proc)
     total = max(1, b - a)

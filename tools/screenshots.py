@@ -4,10 +4,13 @@ selection while it plays (the status bar measured), the sample-level zoom, a 5.1
 the noise reduction with its noise sample, the reverb; (0.4) markers and regions with their list, the spectrum
 panel while playing, the spectrogram and «wave + spectrogram» views, Tools → Spectrum, the spectrogram settings and
 the Record window recording from the null input; (1.0) the batch window after a run, the Hotkeys window, the
-recovery offer, the error window and the long-film report (ARTCORE_STRESS_REPORT). Test sound is made by ffmpeg.
+recovery offer, the error window and the long-film report (ARTCORE_STRESS_REPORT); (2.0) the listening volume, the
+film tools, and the restoration — its menu, its effect windows (the hum found, the clipping found and marked), the
+spectral editing window beside a selection drawn on the spectrogram. Test sound is made by ffmpeg.
 
-Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick]   (--quick: the main window and 1.0's windows only —
-QT_SCALE_FACTOR=1.5 with it is the 150 % check)"""
+Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick | --restore | --block3]   (--quick: the main window and
+1.0's windows only — QT_SCALE_FACTOR=1.5 with it is the 150 % check; --restore: the main window and the restoration
+only; --block3: the main window, VST3 and macros only)"""
 import os
 import subprocess
 import sys
@@ -19,6 +22,8 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("ARTCORE_AUDIO", "null")
 TMP = tempfile.mkdtemp(prefix="artcore_sound_shots_")
+RESTORE = "--restore" in sys.argv
+BLOCK3 = "--block3" in sys.argv                  # 2.0 block 3: VST3 and macros only
 os.environ.setdefault("ARTCORE_SOUND_DATA", os.path.join(TMP, "data"))
 
 SONG = ("aevalsrc='0.55*sin(2*PI*110*t)*exp(-mod(t,0.5)*5)+0.25*sin(2*PI*440*t+3*sin(2*PI*2*t))*(0.6+0.4*sin(2*PI*0.15*t))"
@@ -88,6 +93,24 @@ def main(out: str, lang: str = "ru") -> int:
             pump(0.1)
         w.grab().save(os.path.join(out, f"main_{theme}.png"))
         w.stop_play()
+        if BLOCK3:
+            for x in w.docs:
+                x.mark_saved()
+            shoot_block3(w, out, theme, pump, lang)
+            for x in w.docs:
+                x.mark_saved()
+            w.close()
+            s.close()
+            continue
+        if RESTORE:
+            for x in w.docs:
+                x.mark_saved()
+            shoot_restore(w, out, theme, pump, lang)
+            for x in w.docs:
+                x.mark_saved()
+            w.close()
+            s.close()
+            continue
         if QUICK:
             for x in w.docs:
                 x.mark_saved()
@@ -129,6 +152,8 @@ def main(out: str, lang: str = "ru") -> int:
             shoot_effects(w, out, theme, pump)
             shoot_04(w, out, theme, pump, lang)
         shoot_10(w, out, theme, pump, lang)
+        shoot_20(w, out, theme, pump, lang)
+        shoot_block3(w, out, theme, pump, lang)
         for x in w.docs:
             x.mark_saved()
         w.close()
@@ -237,6 +262,333 @@ def shoot_04(w, out: str, theme: str, pump, lang: str) -> None:
     rd.reject()
     pump(0.2)
     w.grab().save(os.path.join(out, f"recorded_{theme}.png"))
+
+
+def shoot_20(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0: the listening volume on the transport (while playing, the meters still at the file's level) and the
+    Record window's «Listen to the input»."""
+    from PySide6.QtWidgets import QWidget
+    w.tabs.setCurrentIndex(0)
+    pump(0.2)
+    w.vol.slider.setValue(-140)
+    w.play()
+    pump(1.0)
+    w.grab().save(os.path.join(out, f"volume_{theme}.png"))
+    bar = w.findChild(QWidget, "transport")
+    bar.grab().save(os.path.join(out, f"volume_transport_{theme}.png"))
+    w.vol.button.click()
+    pump(0.3)
+    bar.grab().save(os.path.join(out, f"volume_muted_{theme}.png"))
+    w.vol.button.click()
+    w.stop_play()
+    w.vol.slider.setValue(0)
+    w.record_toggle()
+    pump(0.3)
+    rd = w.rec_dlg
+    rd.mon_on.setChecked(True)
+    pump(0.6)
+    rd.grab().save(os.path.join(out, f"record_monitor_{theme}.png"))
+    rd.mon_on.setChecked(False)
+    rd.reject()
+    pump(0.2)
+    shoot_film(w, out, theme, pump, lang)
+
+
+def shoot_film(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 1: Return to video, the automatic sync with its result, the channel matrix, the dialogue boost, the
+    video window (still frames: no libmpv offscreen), the Film menu."""
+    from sound import filmui, fxui, media, sync
+    film_path = os.path.join(TMP, "Фильм (2024).mkv")
+    if not os.path.exists(film_path):
+        ff("-f", "lavfi", "-i", "testsrc2=s=640x272:r=24000/1001:d=12", "-f", "lavfi", "-i", SONG,
+           "-filter_complex", "[1]pan=5.1|c0=c0|c1=c1|c2=0.7*c0+0.7*c1|c3=0.3*c0|c4=0.5*c0|c5=0.5*c1[a]",
+           "-map", "0:v", "-map", "[a]", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-c:a:0", "ac3",
+           "-c:a:1", "aac", "-ac:a:1", "2", "-metadata:s:a:0", "language=rus", "-metadata:s:a:0", "title=Дубляж",
+           "-metadata:s:a:1", "language=eng", "-metadata:s:a:1", "title=Original", "-disposition:a:0", "default",
+           film_path)
+    d = media.open_file(film_path, w.session.folder(), 0)
+    d.add_marker(int(2.0 * d.rate), "Сцена 1" if lang == "ru" else "Scene 1")
+    w.add_doc(d)
+    pump(0.3)
+    rd = filmui.ReturnDialog(d, w.cfg, w)
+    rd.show()
+    rd.stereo.setChecked(True)
+    pump(0.2)
+    rd.grab().save(os.path.join(out, f"return_video_{theme}.png"))
+    rd.reject()
+    ad = filmui.AutoSyncDialog(w, d)
+    ad.show()
+    est = sync.Estimate(offset=-0.4213, L=25 / (24000 / 1001), confidence=0.93, peak=41.0, windows=14, agree=13,
+                        residual_ms=4.0)
+    ad.show_estimate(est)
+    pump(0.2)
+    ad.grab().save(os.path.join(out, f"auto_sync_{theme}.png"))
+    ad.reject()
+    for key in ("chmatrix", "dialog"):
+        dlg = fxui.EffectDialog(w, key, d, 0, d.frames, True)
+        if key == "chmatrix":
+            for k, v in dlg.eff.presets["cm_p_swap_c_lfe"].items():
+                dlg._set(k, v)
+        dlg.show()
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"fx_{key}_{theme}.png"))
+        dlg.reject()
+    w.video_window_toggle()
+    vw = w.video_win
+    d.cursor = int(5.0 * d.rate)
+    t0 = time.time()
+    while getattr(vw.pic, "frames", 1) < 1 and time.time() - t0 < 10:
+        pump(0.1)
+    pump(0.3)
+    vw.grab().save(os.path.join(out, f"video_window_{theme}.png"))
+    vw.close()
+    pump(0.1)
+    menu = next(a.menu() for a in w.menuBar().actions() if a.menu() is not None and a.text() in ("Фильм", "Film"))
+    menu.popup(w.mapToGlobal(w.rect().topLeft()))
+    pump(0.3)
+    menu.grab().save(os.path.join(out, f"film_menu_{theme}.png"))
+    menu.hide()
+    shoot_restore(w, out, theme, pump, lang)
+
+
+def shoot_restore(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 2: the Restoration menu; the hum removal window with the hum found; the clipping repair window with
+    the clipping found (marked on the wave behind it); the de-esser while it previews; crackle removal; adaptive noise
+    reduction; spectral editing — a selection drawn on the spectrogram (a rectangle and a brush stroke) with its
+    window."""
+    from sound import fxui, media
+    from sound.spectral import Shape, SpecSel
+    menu = next(a.menu() for a in w.menuBar().actions() if a.menu() is not None and
+                a.text() in ("Реставрация", "Restoration"))
+    menu.popup(w.mapToGlobal(w.rect().topLeft()))
+    pump(0.3)
+    menu.grab().save(os.path.join(out, f"restore_menu_{theme}.png"))
+    menu.hide()
+    path = os.path.join(TMP, "restore.wav")
+    if not os.path.exists(path):
+        ff("-f", "lavfi", "-i", "aevalsrc='clip(0.75*sin(2*PI*220*t)*(0.6+0.4*sin(2*PI*0.3*t))"
+           "+0.25*sin(2*PI*660*t)*exp(-mod(t,0.5)*4)+0.04*sin(2*PI*50.1*t)+0.025*sin(2*PI*150.3*t)"
+           "+0.18*sin(2*PI*3100*t)*between(mod(t,4),1.5,2.6)+0.01*(random(0)-0.5),-0.8,0.8)':s=48000:d=12:c=stereo",
+           "-ac", "2", "-c:a", "pcm_f32le", path)
+    d = media.open_file(path, w.session.folder())
+    w.add_doc(d)
+    pump(0.3)
+    for key in ("dehum", "declip", "deess", "decrackle", "nr_auto"):
+        dlg = fxui.EffectDialog(w, key, d, 0, d.frames, True)
+        dlg.show()
+        if key == "dehum":
+            t0 = time.time()
+            while not dlg.hum_label.text() and time.time() - t0 < 10:
+                pump(0.1)
+        if key == "declip":
+            dlg.b_find.click()
+            t0 = time.time()
+            while (not dlg.b_find.isEnabled() or not dlg.marks) and time.time() - t0 < 20:
+                pump(0.1)
+        if key == "deess":
+            dlg.set_values({**dlg.values, "freq": 3000.0, "threshold": -36.0})
+            dlg.b_preview.setChecked(True)
+            pump(1.0)
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"fx_{key}_{theme}.png"))
+        if key == "declip":
+            w.grab().save(os.path.join(out, f"declip_marks_{theme}.png"))
+        dlg.reject()
+        pump(0.1)
+    w.wave.set_marks(d, [])
+    w.set_view_mode("both")
+    w.wave.zoom_range(0, int(4.5 * d.rate))
+    w.spectral_panel()
+    panel = w.se_panel
+    panel.set_tool("brush")
+    sel = SpecSel(d.rate, w.wave.sg_settings.scale, ())
+    sel.add(Shape("rect", [(int(1.4 * d.rate), 1800.0), (int(2.7 * d.rate), 5500.0)], chs=(0, 1)))
+    sel.add(Shape("brush", [(int(0.2 * d.rate), 50.0), (int(4.3 * d.rate), 50.0)], rx=0.04 * d.rate, ry=0.03,
+                  chs=(0,)))
+    d.spec_sel = sel
+    w.wave.specEdited.emit()
+    w.wave.refresh()
+    from sound.waveview import GUTTER_W
+    part = next(w.wave.spec_part_at(y) for y in range(w.wave.height()) if w.wave.spec_part_at(y) is not None)
+    w.wave._hover = (GUTTER_W + 600, part[1] + part[2] * 0.4)
+    t0 = time.time()
+    while w.wave.sg_pending() and time.time() - t0 < 30:
+        pump(0.1)
+    pump(0.5)
+    w.grab().save(os.path.join(out, f"spectral_{theme}.png"))
+    panel.grab().save(os.path.join(out, f"spectral_panel_{theme}.png"))
+    panel.close()
+    w.set_view_mode("wave")
+    d.mark_saved()
+
+
+def _testplug() -> str:
+    for p in (os.environ.get("ARTCORE_TESTPLUG", ""),
+              os.path.join(ROOT, "build", "testplug", "VST3", "Release", "ArtCoreTestPlug.vst3")):
+        if p and os.path.exists(p):
+            return p
+    return ""
+
+
+def shoot_block3(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 3: Settings → VST3 (the plugins found, one that did not load); the Effects menu with the plugins;
+    a plugin's window with its parameters; the Macros menu, the recording in the status bar, a macro's window with
+    its steps, the list of macros."""
+    import shutil
+    from sound import fxui, macro, macroui
+    from sound.dialogs import SettingsDialog
+    from sound.vst import scan
+    plug = _testplug()
+    folder = os.path.join(TMP, "vst3")
+    if plug and not os.path.exists(folder):
+        os.makedirs(folder)
+        shutil.copytree(plug, os.path.join(folder, os.path.basename(plug)))
+        with open(os.path.join(folder, "Broken.vst3"), "wb") as f:
+            f.write(b"not a plugin")
+    if plug:
+        w.cfg["vst3_folders"] = [folder]
+        scan._lib = None
+        sd = SettingsDialog(w.cfg, w, page="vst3")
+        sd.resize(760, 640)
+        sd.show()
+        sd.vst.start_scan(False)
+        sd.vst.wait()
+        pump(0.3)
+        sd.grab().save(os.path.join(out, f"settings_vst3_{theme}.png"))
+        sd.reject()
+        w._fill_vst_menu()
+        fxm = next(a.menu() for a in w.menuBar().actions() if a.menu() is not None and
+                   a.text() in ("Эффекты", "Effects"))
+        fxm.popup(w.mapToGlobal(w.rect().topLeft()))
+        pump(0.2)
+        sub = w.vst_menu
+        sub.popup(fxm.mapToGlobal(fxm.rect().topRight()))
+        pump(0.3)
+        fxm.grab().save(os.path.join(out, f"vst_menu_{theme}.png"))
+        pl = next(a.menu() for a in sub.actions() if a.menu() is not None)        # the maker's submenu
+        pl.popup(sub.mapToGlobal(sub.rect().topRight()))
+        pump(0.3)
+        sub.grab().save(os.path.join(out, f"vst_submenu_{theme}.png"))
+        pl.grab().save(os.path.join(out, f"vst_plugins_{theme}.png"))
+        pl.hide()
+        sub.hide()
+        fxm.hide()
+        p = next(x for x in scan.library(w.cfg).plugins() if x.name == "ArtCore Test Plug Latency")
+        d = w.doc
+        dlg = fxui.EffectDialog(w, "vst3", d, 0, d.frames, True, plugin=p.ref())
+        dlg.show()
+        dlg.vst.wait_loaded()
+        s_, _lab = dlg.vst.ctrls["gain_db"]
+        s_.setValue(round(27 / 48 * s_.maximum()))
+        dlg.b_preview.setChecked(True)
+        pump(1.0)
+        dlg.resize(780, 620)
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"fx_vst3_{theme}.png"))
+        dlg.reject()
+        pump(0.2)
+    names = ("Подготовка подкаста", "Срезать 2 с в начале") if lang == "ru" else ("Podcast prep", "Cut 2 s at the start")
+    for m in macro.load_all():
+        macro.delete(m)
+    m1 = macro.Macro(names[0], [macro.Step("dc"), macro.Step("nr_auto"),
+                                macro.Step("select", {"a": 0.0, "a_from": "start", "b": 0.5, "b_from": "start"}),
+                                macro.Step("fade_in", {"curve": "scurve"}), macro.Step("select_none"),
+                                macro.Step("normalize", {"mode": "loudness", "target": -16.0, "ceiling": -1.0}),
+                                macro.Step("save", {"format": "mp3", "template": "{name}-podcast"})], "Ctrl+Alt+1")
+    m2 = macro.Macro(names[1], [macro.Step("select", {"a": 0.0, "a_from": "start", "b": 2.0, "b_from": "start"}),
+                                macro.Step("delete")], "Ctrl+Alt+2")
+    macro.save(m1)
+    macro.save(m2)
+    w.fill_macros()
+    w.macro_record_toggle()
+    d = w.doc
+    d.sel = (int(2 * d.rate), int(5 * d.rate))
+    w._on_selection()
+    w.delete()
+    w.simple_op("gain", db=-3.0)
+    t0 = time.time()
+    while w.job is not None and time.time() - t0 < 20:
+        pump(0.05)
+    pump(0.3)
+    mm = w.macro_menu
+    mm.popup(w.mapToGlobal(w.rect().topLeft()))
+    pump(0.3)
+    mm.grab().save(os.path.join(out, f"macro_menu_{theme}.png"))
+    mm.hide()
+    w.grab().save(os.path.join(out, f"macro_recording_{theme}.png"))
+    w.mrec = None
+    w.a_mrec.setChecked(False)
+    w.a_mrec.setText(w.a_mrec.text())
+    w._macro_status()
+    w.undo()
+    w.undo()
+    dlg = macroui.MacroDialog(w, macro.find(names[0]))
+    dlg.resize(700, 560)
+    dlg.show()
+    pump(0.3)
+    dlg.grab().save(os.path.join(out, f"macro_dialog_{theme}.png"))
+    dlg.reject()
+    mg = macroui.MacroManager(w)
+    mg.resize(620, 440)
+    mg.show()
+    pump(0.3)
+    mg.grab().save(os.path.join(out, f"macro_manager_{theme}.png"))
+    mg.reject()
+    for m in macro.load_all():
+        macro.delete(m)
+    w.fill_macros()
+    shoot_cd(w, out, theme, pump, lang)
+
+
+def shoot_cd(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 4: the rip window over a (fake) disc with CD-TEXT, the burn window over a file with regions and a
+    (fake) blank CD-RW."""
+    import json
+    from sound import cdui
+    folder = os.path.join(TMP, "cdfake")
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+        names = (("Вступление", "Город", "Ночь", "Дорога домой", "Финал") if lang == "ru" else
+                 ("Intro", "City", "Night", "The way home", "Finale"))
+        files = []
+        for i, f0 in enumerate((220, 330, 247, 294, 392)):
+            p = os.path.join(folder, f"t{i + 1}.wav")
+            ff("-f", "lavfi", "-i", f"sine=f={f0}:d={4.5 + i * 1.7}:r=44100", "-ac", "2", "-c:a", "pcm_s16le", p)
+            files.append(os.path.basename(p))
+        with open(os.path.join(folder, "disc.json"), "w", encoding="utf-8") as f:
+            json.dump({"files": files, "gaps": [150, 0, 150, 75],
+                       "album": {"title": "Огни" if lang == "ru" else "Lights", "performer": "ArtCore Band"},
+                       "tracks": [{"title": n} for n in names]}, f, ensure_ascii=False)
+        os.makedirs(os.path.join(TMP, "burner"), exist_ok=True)
+    os.environ["ARTCORE_FAKE_CD"] = os.path.join(folder, "disc.json")
+    os.environ["ARTCORE_FAKE_BURNER"] = os.path.join(TMP, "burner")
+    try:
+        dlg = cdui.RipDialog(w)
+        dlg.wait()
+        dlg.resize(880, 700)
+        dlg.show()
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"cd_rip_{theme}.png"))
+        s = dlg.settings()
+        s["mode"] = "disc"
+        dlg.reject()
+        cdui.run_rip(w, s)
+        t0 = time.time()
+        while w.job is not None and time.time() - t0 < 60:
+            pump(0.1)
+        pump(0.3)
+        w.grab().save(os.path.join(out, f"cd_ripped_{theme}.png"))
+        bd = cdui.BurnDialog(w, w.doc)
+        bd.wait()
+        bd.resize(880, 700)
+        bd.show()
+        pump(0.3)
+        bd.grab().save(os.path.join(out, f"cd_burn_{theme}.png"))
+        bd.reject()
+        w.doc.mark_saved()
+    finally:
+        os.environ.pop("ARTCORE_FAKE_CD", None)
+        os.environ.pop("ARTCORE_FAKE_BURNER", None)
 
 
 def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:

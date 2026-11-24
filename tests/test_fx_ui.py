@@ -62,7 +62,7 @@ def test_menu_and_toolbar(qapp, session, data_dir, media_dir):
     w = _win(qapp, session)
     names = [a.objectName() for a in w.fx_actions.values()]
     for k in fx.ORDER:
-        assert "fx_" + k in names
+        assert ("fx_" + k in names) == (k not in fx.FILM)          # 2.0: the film effects are in the Film menu
     assert "fx_take_noise" in names
     menus = [a.text() for a in w.menuBar().actions()]
     assert "Эффекты" in menus and menus.index("Эффекты") == menus.index("Обработка") + 1

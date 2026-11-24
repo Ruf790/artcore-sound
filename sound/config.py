@@ -32,7 +32,26 @@ DEFAULTS = {
     "save_opts":     {},            # format → {"bits": "24", "bitrate": 320, …}
     # effects (0.3)
     "fx_last":       {},            # effect key → the values last applied
-    "fx_presets":    {},            # effect key → {name: values} (the user's own presets)
+    "fx_presets":    {},            # effect key → {name: values} (the user's own presets; "vst3:<id>" a plugin's)
+    "vst3_folders":  [],            # 2.0: where the VST3 plugins are looked for ([] — the standard folders)
+    "vst3_recent":   [],            # the plugins last opened (their keys), first in the menu
+    "vst_preset_dir": "",           # the folder of the .vstpreset files last opened or saved
+    # 2.0: Audio CD
+    "cd_drive":      "",            # the drive last ripped from
+    "cd_rip_mode":   "files",       # files | tracks (into the editor) | disc (one file, a region per track)
+    "cd_rip_format": "flac",
+    "cd_rip_option": {},            # format → option
+    "cd_rip_folder": "",
+    "cd_rip_template": "{artist} - {album}/{n:2} - {title}",
+    "cd_secure":     True,          # each track read twice, the pieces that differ read again
+    "cd_offset":     0,             # the drive's read offset, frames (AccurateRip's list)
+    "cd_mb_auto":    True,          # no CD-TEXT: MusicBrainz asked at once
+    "cd_gap":        2.0,           # seconds between the burnt tracks
+    "cd_cdtext":     True,
+    "cd_translit":   True,          # CD-TEXT has no Cyrillic: Latin letters
+    "cd_burn_mode":  "dao",         # dao (raw image, CD-TEXT) | tao (track by track)
+    "cd_speed":      0,             # ×, 0 — the fastest
+    "cd_burn_artist": "",
     "fx_keep_tail":  True,          # delay / reverb: ring on past the selection
     # analysis, markers, recording (0.4)
     "view_mode":     "wave",        # wave | spec | both
@@ -54,6 +73,9 @@ DEFAULTS = {
     "batch_geometry": "",
     "batch_split":   [],
     "noise_dir":     "",            # where noise samples (*.acnoise) were saved / loaded
+    # 2.0
+    "play_volume_db": 0.0,          # the listening volume (only what is heard, never the file)
+    "play_muted":    False,
 }
 
 RECENT_MAX = 12
@@ -137,9 +159,12 @@ def load() -> dict:
     cfg["fx_keep_tail"] = bool(cfg.get("fx_keep_tail"))
     for k in ("loop", "follow", "return_cursor", "check_updates"):
         cfg[k] = bool(cfg.get(k))
-    for k in ("device", "temp_dir", "last_dir", "save_dir", "save_format"):
+    for k in ("device", "temp_dir", "last_dir", "save_dir", "save_format", "vst_preset_dir"):
         if not isinstance(cfg.get(k), str):
             cfg[k] = DEFAULTS[k]
+    for k in ("vst3_folders", "vst3_recent"):          # 2.0
+        v = cfg.get(k)
+        cfg[k] = [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
     return cfg
 
 
