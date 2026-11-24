@@ -3,7 +3,8 @@ track, an E-AC-3 track, chapters, and a DTS track when asked — and ArtCore Sou
 uses it: opening (decoding + peaks), the memory of the process, the disk of the working files, drawing the waveform
 and the spectrogram while scrolling and zooming, cut / paste / undo over the whole file, the loudness analysis of all
 of it, a LUFS normalization, the limiter and one heavy effect over all of it, saving to FLAC and AC-3, markers,
-closing and the clean-up. The result is a table (report.md) and the figures (report.json) in the report folder.
+closing and the clean-up. 2.0: retime, a downmix, «Return to video» with a stereo track, the restoration effects
+and a spectral erase. The result is a table (report.md) and the figures (report.json) in the report folder.
 
     python tools/stress_long.py <report folder> [--minutes 150] [--dts] [--heavy nr|reverb|declick|eq] [--keep]
 
@@ -357,6 +358,7 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
         d.undo()
         d.discard_redo()
         d.free_orphans()
+    run_20(d, rep, mem, sess, film)
     gc_bytes = folder_bytes(d.folder)
     rep.add("disk", "working files after normalize", gb(disk_after), "disk_after_normalize", disk_after)
     rep.add("disk", "after the effects undone (their files freed)", gb(gc_bytes), "disk_after_gc", gc_bytes)
@@ -402,6 +404,66 @@ def run(out: str, minutes: float, dts: bool, heavy: str, keep: bool) -> int:
         shutil.rmtree(os.path.join(out, "film"), ignore_errors=True)
     print("\n" + md)
     return 0 if not left else 1
+
+
+def run_20(d, rep, mem, sess, film: str) -> None:
+    """2.0 over the whole film: the dub's speed changed (PAL 25 → 23.976, the pitch kept) and moved, a 5.1 → stereo
+    downmix, «Return to video» with a stereo track, the restoration effects (hum, clipping, adaptive noise
+    reduction, crackle), a spectral erase of a minute's band. Each undone after (its files freed)."""
+    from sound import chans, film as fm, fx, spectral, sync
+
+    def undo():
+        d.undo()
+        d.discard_redo()
+        d.free_orphans()
+    n = d.frames
+    mem.reset()
+    L = 25.0 / (24000 / 1001)
+    src, sec = timed(sync.retime, d, L, True, int(0.5 * d.rate))
+    sync.apply_retime(d, src, L, int(0.5 * d.rate), "retime")
+    rep.add("2.0", "retime 25 → 23.976 fps (the pitch kept) + 0.5 s later", f"{sec:.1f} s "
+            f"({n / d.rate / sec:.1f}× real time), {d.frames / d.rate / 3600:.3f} h", "retime_s", round(sec, 2))
+    rep.add("2.0", "retime: peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()), "retime_rss",
+            mem.peak()[0])
+    undo()
+    if d.channels >= 6:
+        mem.reset()
+        src, sec = timed(chans.convert, d, 2, "itu")
+        rep.add("2.0", "downmix 5.1 → stereo (ITU)", f"{sec:.1f} s ({n / d.rate / sec:.0f}× real time)",
+                "downmix_s", round(sec, 2))
+        from sound import store
+        store.delete_source(src)
+    if d.film.get("path"):
+        mem.reset()
+        out = os.path.join(sess.path, "returned.mkv")
+        opts = fm.Options(replace_index=d.film["index"], codec="ac3", lang="rus", title="Dub", out_path=out,
+                          stereo="itu" if d.channels > 2 else "", stereo_title="Dub (stereo)")
+        res, sec = timed(fm.return_to_video, d, opts)
+        rep.add("2.0", "return to video: AC-3 5.1 + a stereo track, the rest copied", f"{sec:.1f} s "
+                f"({n / d.rate / sec:.0f}× real time), {gb(os.path.getsize(out))}", "return_s", round(sec, 2))
+        rep.add("2.0", "return to video: peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()),
+                "return_rss", mem.peak()[0])
+        os.remove(out)
+    for key, values in (("dehum", {}), ("declip", {}), ("nr_auto", {}), ("decrackle", {})):
+        mem.reset()
+        src, sec = timed(fx.render, d, 0, n, fx.get(key), values)
+        d.replace(0, n, src, key)
+        rep.add("2.0", f"restoration {key} over all of it", f"{sec:.1f} s ({n / d.rate / sec:.1f}× real time)",
+                f"fx_{key}_s", round(sec, 2))
+        rep.add("2.0", f"{key}: peak memory RSS / private", " / ".join(mb(x) for x in mem.peak()), f"fx_{key}_rss",
+                mem.peak()[0])
+        undo()
+    mem.reset()
+    a = n // 2
+    sel = spectral.SpecSel(d.rate, "log", tuple(range(d.channels)),
+                           [spectral.Shape("rect", [(a, 900.0), (a + 60 * d.rate, 1400.0)])])
+    (ra, rb, src), sec = timed(spectral.apply, d, sel, spectral.Params(action="erase"))
+    d.replace(ra, rb, src, "spectral")
+    rep.add("2.0", "spectral erase: 1 minute, 900–1400 Hz, every channel", f"{sec:.1f} s", "spectral_s",
+            round(sec, 2))
+    undo()
+    if d.frames != n:
+        raise RuntimeError("the 2.0 steps left the film changed")
 
 
 def main() -> int:

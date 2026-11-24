@@ -205,7 +205,7 @@ def recorders() -> list[Recorder]:
         return []
     with _Com():
         dm = _create("IMAPI2.MsftDiscMaster2")
-        if not dm.IsSupportEnvironment:
+        if not dm.IsSupportedEnvironment:
             return []
         out = []
         for i in range(dm.Count):
