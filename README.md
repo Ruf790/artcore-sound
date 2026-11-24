@@ -144,6 +144,8 @@
 | Спектр | Ctrl+Shift+F |
 | Спектрограмма вкл / выкл | F7 |
 | Пакетная обработка | Ctrl+B |
+| **Макросы** | |
+| Записать макрос | Ctrl+Shift+M |
 | **Воспроизведение** | |
 | Воспроизвести | Пробел |
 | Воспроизвести весь файл | Shift+Пробел |
@@ -261,6 +263,8 @@ An audio editor for Windows in the spirit of Sound Forge.
 | Spectrum | Ctrl+Shift+F |
 | Spectrogram on / off | F7 |
 | Batch processing | Ctrl+B |
+| **Macros** | |
+| Record a macro | Ctrl+Shift+M |
 | **Transport** | |
 | Play | Space |
 | Play the whole file | Shift+Space |

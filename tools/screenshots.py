@@ -435,7 +435,7 @@ def shoot_block3(w, out: str, theme: str, pump, lang: str) -> None:
     a plugin's window with its parameters; the Macros menu, the recording in the status bar, a macro's window with
     its steps, the list of macros."""
     import shutil
-    from sound import fxui, macro, macroui, vstui
+    from sound import fxui, macro, macroui
     from sound.dialogs import SettingsDialog
     from sound.vst import scan
     plug = _testplug()

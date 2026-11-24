@@ -65,7 +65,7 @@ def test_empty_window(qapp, session, data_dir):
     assert not w.a_save.isEnabled() and not w.a_cut.isEnabled() and not w.tb["normalize"].isEnabled()
     menus = [a.text() for a in w.menuBar().actions()]
     assert menus == ["ArtCore Sound", "Файл", "Правка", "Метки", "Вид", "Обработка", "Эффекты", "Реставрация", "Фильм",
-                     "Инструменты", "Воспроизведение"]
+                     "Инструменты", "Макросы", "Воспроизведение"]
     assert "Справка" not in menus
     img = w.grab().toImage()
     assert img.width() > 1000
@@ -324,7 +324,7 @@ def test_light_theme_and_english(qapp, session, data_dir, media_dir):
     try:
         w = _win(qapp, session)
         assert [a.text() for a in w.menuBar().actions()] == ["ArtCore Sound", "File", "Edit", "Markers", "View",
-                                                              "Process", "Effects", "Restoration", "Film", "Tools",
+                                                              "Process", "Effects", "Restoration", "Film", "Tools", "Macros",
                                                               "Transport"]
         _open(qapp, w, os.path.join(media_dir, "stereo16.wav"))
         w._set_theme("light")

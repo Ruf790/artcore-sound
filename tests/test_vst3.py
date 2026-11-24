@@ -395,7 +395,8 @@ def test_macro_with_a_plugin(plug, session):
     x = _noise(2 * RATE, 2)
     d = _doc(session, x)
     macro.run(d, [macro.Step("select", {"a": 1.0, "a_from": "end", "b": 0.0, "b_from": "end"}),
-                  macro.Step("vst3", {"plugin": _ref(plug, LATE), "params": {"gain_db": GAIN_6DB}})])
+                  macro.Step("vst3", {"plugin": _ref(plug, LATE), "params": {"gain_db": GAIN_6DB},
+                                      "keep_tail": False})])
     y = d.read(0, d.frames)
     assert d.frames == 2 * RATE
     assert np.array_equal(y[:RATE], x[:RATE])

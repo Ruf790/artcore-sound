@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from conftest import ff, pump
 
-from sound import batch, config, macro, store
+from sound import batch, macro, store
 from sound.doc import Document
 
 RATE = 48000
