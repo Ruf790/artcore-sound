@@ -99,6 +99,7 @@
 | Сохранить | Ctrl+S |
 | Сохранить как | Ctrl+Shift+S |
 | Вернуть в видео | Ctrl+Shift+E |
+| Audio CD → Рип Audio CD | Ctrl+Shift+D |
 | Закрыть | Ctrl+W |
 | Закрыть все | Ctrl+Shift+W |
 | **Правка** | |
@@ -218,6 +219,7 @@ An audio editor for Windows in the spirit of Sound Forge.
 | Save | Ctrl+S |
 | Save as | Ctrl+Shift+S |
 | Return to video | Ctrl+Shift+E |
+| Audio CD → Rip an Audio CD | Ctrl+Shift+D |
 | Close | Ctrl+W |
 | Close all | Ctrl+Shift+W |
 | **Edit** | |

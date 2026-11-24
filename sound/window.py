@@ -241,6 +241,12 @@ class MainWindow(QMainWindow, FilmCommands):
         self.a_save_regions = A(m, "fa6s.layer-group", t("mk_save_regions") + "…", self.save_regions_dialog)
         self.a_return_video = A(m, "fa6s.film", t("rv_title") + "…", self.return_to_video_dialog, "Ctrl+Shift+E")
         m.addSeparator()
+        cdm = m.addMenu(style.icon("fa6s.compact-disc"), "Audio CD")          # 2.0
+        self.a_cd_rip = A(cdm, "fa6s.compact-disc", t("cd_rip") + "…", self.cd_rip_dialog, "Ctrl+Shift+D")
+        self.a_cd_burn = A(cdm, "fa6s.fire", t("cd_burn") + "…", self.cd_burn_dialog)
+        cdm.addSeparator()
+        self.a_cd_eject = A(cdm, "fa6s.eject", t("cd_eject"), self.cd_eject)
+        m.addSeparator()
         self.a_show = A(m, "fa6s.folder", t("show_file"), self._show_file)
         m.addSeparator()
         self.a_close = A(m, "fa6s.xmark", t("close"), lambda: self.close_doc(self.tabs.currentIndex()), "Ctrl+W")
@@ -1521,6 +1527,35 @@ class MainWindow(QMainWindow, FilmCommands):
             return
         self.apply_effect(key, dlg.result_values(), dlg.keep_tail_on(), (a, b))
 
+    # ── Audio CD (2.0) ────────────────────────────────────────
+    def cd_rip_dialog(self) -> None:
+        if self._busy():
+            return
+        from . import cdui
+        self.stop_play()
+        dlg = cdui.RipDialog(self)
+        if dlg.exec():
+            cdui.run_rip(self, dlg.settings())
+
+    def cd_burn_dialog(self) -> None:
+        d = self.doc
+        if d is None or self._busy() or d.frames <= 0:
+            return
+        from . import cdui
+        self.stop_play()
+        dlg = cdui.BurnDialog(self, d)
+        if dlg.exec():
+            cdui.run_burn(self, d, dlg.settings())
+
+    def cd_eject(self) -> None:
+        from .cd import drive as cdd
+        for info in cdd.drives()[:1]:
+            try:
+                with cdd.open_drive(info) as dr:
+                    dr.eject()
+            except Exception as e:                       # noqa: BLE001
+                self._toast(str(e))
+
     # ── VST3 plugins (2.0) ────────────────────────────────────
     def _fill_vst_menu(self) -> None:
         from . import vstui
@@ -2270,6 +2305,8 @@ class MainWindow(QMainWindow, FilmCommands):
             a.setEnabled(on and not (busy and a not in (self.a_copy, self.a_close_all)))
         for a in self.proc_actions:
             a.setEnabled(has and not busy)
+        self.a_cd_burn.setEnabled(has and not busy)                # 2.0: Audio CD
+        self.a_cd_rip.setEnabled(not busy)
         for a in getattr(self, "_macro_actions", []):           # 2.0
             if a.objectName().startswith("macro:"):
                 a.setEnabled(has and not busy and self.mrec is None)

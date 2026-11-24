@@ -5,3 +5,4 @@ scipy>=1.11
 sounddevice>=0.4.6
 python-mpv>=1.0.6
 pedalboard>=0.9.16
+comtypes>=1.4; sys_platform == 'win32'

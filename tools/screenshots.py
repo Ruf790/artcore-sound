@@ -537,6 +537,58 @@ def shoot_block3(w, out: str, theme: str, pump, lang: str) -> None:
     for m in macro.load_all():
         macro.delete(m)
     w.fill_macros()
+    shoot_cd(w, out, theme, pump, lang)
+
+
+def shoot_cd(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 4: the rip window over a (fake) disc with CD-TEXT, the burn window over a file with regions and a
+    (fake) blank CD-RW."""
+    import json
+    from sound import cdui
+    folder = os.path.join(TMP, "cdfake")
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+        names = (("Вступление", "Город", "Ночь", "Дорога домой", "Финал") if lang == "ru" else
+                 ("Intro", "City", "Night", "The way home", "Finale"))
+        files = []
+        for i, f0 in enumerate((220, 330, 247, 294, 392)):
+            p = os.path.join(folder, f"t{i + 1}.wav")
+            ff("-f", "lavfi", "-i", f"sine=f={f0}:d={4.5 + i * 1.7}:r=44100", "-ac", "2", "-c:a", "pcm_s16le", p)
+            files.append(os.path.basename(p))
+        with open(os.path.join(folder, "disc.json"), "w", encoding="utf-8") as f:
+            json.dump({"files": files, "gaps": [150, 0, 150, 75],
+                       "album": {"title": "Огни" if lang == "ru" else "Lights", "performer": "ArtCore Band"},
+                       "tracks": [{"title": n} for n in names]}, f, ensure_ascii=False)
+        os.makedirs(os.path.join(TMP, "burner"), exist_ok=True)
+    os.environ["ARTCORE_FAKE_CD"] = os.path.join(folder, "disc.json")
+    os.environ["ARTCORE_FAKE_BURNER"] = os.path.join(TMP, "burner")
+    try:
+        dlg = cdui.RipDialog(w)
+        dlg.wait()
+        dlg.resize(880, 700)
+        dlg.show()
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"cd_rip_{theme}.png"))
+        s = dlg.settings()
+        s["mode"] = "disc"
+        dlg.reject()
+        cdui.run_rip(w, s)
+        t0 = time.time()
+        while w.job is not None and time.time() - t0 < 60:
+            pump(0.1)
+        pump(0.3)
+        w.grab().save(os.path.join(out, f"cd_ripped_{theme}.png"))
+        bd = cdui.BurnDialog(w, w.doc)
+        bd.wait()
+        bd.resize(880, 700)
+        bd.show()
+        pump(0.3)
+        bd.grab().save(os.path.join(out, f"cd_burn_{theme}.png"))
+        bd.reject()
+        w.doc.mark_saved()
+    finally:
+        os.environ.pop("ARTCORE_FAKE_CD", None)
+        os.environ.pop("ARTCORE_FAKE_BURNER", None)
 
 
 def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:

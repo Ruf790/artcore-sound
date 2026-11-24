@@ -14,6 +14,11 @@ ArtCore Sound is free software under the GNU GPL v3 (see LICENSE). It ships with
 | **NumPy** | BSD 3-Clause | https://numpy.org |
 | **SciPy** (the K filter, the true-peak oversampling, the effects' filters, the FFTs — pocketfft) | BSD 3-Clause | https://scipy.org |
 | **Rubber Band Library** (inside FFmpeg: the tempo / pitch effect) | GPL v2+ | https://breakfastquay.com/rubberband/ |
+| **pedalboard** (Spotify) — hosts the VST3 plugins, in a process of their own | GPL v3 | https://github.com/spotify/pedalboard |
+| **JUCE** (inside pedalboard) | GPL v3 (as used by pedalboard) | https://juce.com |
+| **VST 3 SDK** (Steinberg; inside pedalboard, and builds the test plugin `tools/testplug`, not shipped) | MIT | https://github.com/steinbergmedia/vst3sdk |
+| **comtypes** (Windows' burning service IMAPI2 from Python: writing Audio CDs) | MIT | https://github.com/enthought/comtypes |
+| **MusicBrainz** (album and track names looked up by a disc's table of contents; a web service, nothing bundled) | data CC0 | https://musicbrainz.org |
 | **Python** (incl. multiprocessing — the batch's worker processes) | PSF License | https://www.python.org |
 | **PyInstaller** bootloader (starts the exe) | GPL v2 with the bootloader exception | https://pyinstaller.org |
 | **Inno Setup** (makes the installer; not part of the program) | Inno Setup License | https://jrsoftware.org/isinfo.php |

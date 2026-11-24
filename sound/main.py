@@ -479,6 +479,7 @@ def _selftest_20(src, session, tmp: str, lines: list) -> None:
     _selftest_film(session, tmp, lines)
     _selftest_restore(session, tmp, lines)
     _selftest_vst3(session, tmp, lines)
+    _selftest_cd(session, tmp, lines)
 
 
 def _selftest_vst3(session, tmp: str, lines: list) -> None:
@@ -543,6 +544,67 @@ def _selftest_vst3(session, tmp: str, lines: list) -> None:
         lines.append(f"VST3 crash isolated: {e.kind}")
     if not np.array_equal(d.read(0, d.frames), x):
         raise RuntimeError("the document after the crash")
+
+
+def _selftest_cd(session, tmp: str, lines: list) -> None:
+    """2.0 block 4: Windows' burning service (IMAPI2 through comtypes: the recorders, an IStream over a file); a
+    fake disc ripped (secure, CD-TEXT, a sector that reads wrong once) into the editor with regions and burnt back by
+    a fake recorder — the image's table of contents, CD-TEXT and sound checked."""
+    import json
+    import shutil
+
+    from . import ff as ffm
+    from .cd import burn as cdb
+    from .cd import cdtext, image
+    from .cd import drive as cdd
+    from .cd import rip as cdr
+    if sys.platform == "win32":
+        import comtypes
+        recs = cdb.recorders()
+        lines.append(f"IMAPI2 (comtypes {comtypes.__version__}): {len(recs)} recorders "
+                     f"{[r.name for r in recs]}")
+        probe = os.path.join(tmp, "stream.bin")
+        with open(probe, "wb") as f:
+            f.write(b"\0" * 4096)
+        with cdb._Com():
+            st = cdb._stream(probe, 1)
+            del st
+        lines.append("IStream over a file: OK")
+    folder = os.path.join(tmp, "cd")
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    files = []
+    for i, f0 in enumerate((440, 660)):
+        p = os.path.join(folder, f"t{i + 1}.wav")
+        import subprocess
+        subprocess.run([ffm.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", f"sine=f={f0}:d=4.5:r=44100", "-ac", "2",
+                        "-c:a", "pcm_s16le", p], check=True)
+        files.append(os.path.basename(p))
+    spec = os.path.join(folder, "disc.json")
+    with open(spec, "w", encoding="utf-8") as f:
+        json.dump({"files": files, "gaps": [75], "album": {"title": "Тест", "performer": "ArtCore"},
+                   "tracks": [{"title": "Первый"}, {"title": "Второй"}], "flaky": [40]}, f, ensure_ascii=False)
+    dr = cdd.FakeDrive.from_file(spec)
+    toc = dr.read_toc()
+    meta = cdr.Meta.from_cdtext(dr.read_cdtext(), 2)
+    docs, res = cdr.rip(dr, toc, [1, 2], meta, cdr.Options(secure=True), session.folder, "disc")
+    d = docs[0]
+    lines.append(f"CD rip (fake): {len(toc.audio)} tracks, MusicBrainz {toc.musicbrainz_id()}, CRC {res[0].crc}, "
+                 f"re-read {res[0].reread}, regions {[m.name for m in d.markers]}")
+    if [m.name for m in d.markers] != ["Первый", "Второй"] or res[0].reread < 1 or res[0].suspicious:
+        raise RuntimeError("the CD rip")
+    plan = cdb.Plan(cdb.tracks_of(d, "regions"), gap=1.0, album=meta.album, performer=meta.artist)
+    toc2, img = cdb.make_image(d, plan, session.folder())
+    r = image.read(img)
+    text = cdtext.decode(r.packs)
+    ok_audio = image.read_audio(img, toc2.track(2).start, toc2.track(2).length) == \
+        dr.pcm[toc.track(2).start * 2352:(toc.track(2).start + toc.track(2).length) * 2352]
+    lines.append(f"CD image: {r.sectors} sectors, Q CRC errors {r.bad_q}, CD-TEXT {text.album} "
+                 f"{[x.get('title') for x in text.tracks]}, track 2 bit for bit: {ok_audio}")
+    if r.bad_q or text.album.get("title") != "Test" or not ok_audio:
+        raise RuntimeError("the CD image")
+    os.remove(img)
+    d.close()
 
 
 def _selftest_film(session, tmp: str, lines: list) -> None:
