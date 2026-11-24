@@ -24,6 +24,8 @@ from ..store import BASE, CHUNK, FACTOR, MIN_BLOCKS, Source
 
 CACHE_DIR = "cache"
 PEAK_STEP = CHUNK * 8             # frames read at a time while the peaks are made
+READ_DIRECT = 16 << 10            # reads of at least this many bytes go through the file: the mapping would keep
+                                  # every page it touched in the process's memory (RSS) as a project plays on
 KSDATAFORMAT_PCM = b"\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
 KSDATAFORMAT_FLOAT = b"\x03\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
 MASKS = {1: 0x4, 2: 0x3, 6: 0x3F, 8: 0x63F}
@@ -161,7 +163,7 @@ class PcmSource(Source):
         """Big runs through plain file reads (the system's read-ahead), small ones through the mapping."""
         info = self.info
         nbytes = (b - a) * info.channels * info.width
-        if nbytes >= store.READ_DIRECT:
+        if nbytes >= READ_DIRECT:
             f = getattr(self._local, "f", None)
             try:
                 if f is None:

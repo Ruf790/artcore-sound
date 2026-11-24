@@ -159,25 +159,38 @@ def bounce_track(project, tid: int, path: str, cache: str, progress=None) -> mme
         pos, skip = 0, lat
         quiet = 0
         limit = int(0.25 * project.rate)
-        stop = end + int(TAIL_MAX * project.rate)
+        stop = end + lat + int(TAIL_MAX * project.rate)
         bare = replace(tr, mute=False, solo=False)
+        held: list = []                         # silent blocks of the tail: written only if sound follows
         try:
             while pos < stop:
-                n = min(RENDER_BLOCK, stop - pos)
+                n = min(RENDER_BLOCK if pos + lat < end else 4096, stop - pos)
+                if pos + lat < end:
+                    n = min(n, end + lat - pos)
                 y = eng._track(bare, pos, n)
                 pos += n
                 if skip:
                     k = min(skip, len(y))
                     y = y[k:]
                     skip -= k
-                if pos > end:
-                    pk = float(np.abs(y).max()) if len(y) else 0.0
-                    quiet = quiet + n if pk < QUIET else 0
-                w.append(y.astype(np.float32))
+                if not len(y):
+                    continue
+                y = y.astype(np.float32)
+                if pos - lat <= end:
+                    w.append(y)
+                else:
+                    if float(np.abs(y).max()) < QUIET:
+                        held.append(y)
+                        quiet += len(y)
+                        if quiet >= limit:
+                            break
+                    else:
+                        for h in held:
+                            w.append(h)
+                        held, quiet = [], 0
+                        w.append(y)
                 if progress is not None:
                     progress(min(1.0, pos / max(1, end)))
-                if pos >= end + lat and quiet >= limit:
-                    break
         except BaseException:
             w.abort()
             raise

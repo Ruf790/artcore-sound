@@ -36,7 +36,7 @@ LIVE_BLOCK = 1024
 RENDER_BLOCK = 16384
 PF_CHUNK = 1 << 15              # frames per prefetch chunk
 PF_AHEAD = 3.0                  # seconds the prefetch keeps read ahead of the play position
-PF_BUDGET = 96 << 20            # bytes of prefetched sound at most
+PF_BUDGET = 48 << 20            # bytes of prefetched sound at most
 METER_KEEP = 2.0                # seconds of meter values kept (looked up by the heard position)
 
 
@@ -326,17 +326,19 @@ class Engine:
         self.late = 0                      # blocks that took longer than their own length (live)
         self.extra_input = None            # rec.py: (track id → frames) to monitor live into a track
         self.state = None
+        self.extend = 0                    # while recording: the project plays on past its end (silence)
 
     # ── the player's view ─────────────────────────────────────
     @property
     def frames(self) -> int:
-        return self.project.frames
+        return max(self.project.frames, self.extend)
 
     @property
     def errors(self) -> dict:
+        """slot id → message of the effects that failed (read from the window's thread while the reader mixes)."""
         out = {}
-        for n in self.nodes.values():
-            out.update(n.chain.errors)
+        for n in list(self.nodes.values()):
+            out.update(dict(n.chain.errors))
         return out
 
     def close(self) -> None:
@@ -502,6 +504,8 @@ class Engine:
         frames = np.arange(c, c + n, dtype=np.float64)
         ins: dict = {}                                    # dest id → summed input
         audio = [t for t in tracks if t.kind == "audio"]
+        if not self.live:                                 # a render: a silent track need not be mixed at all
+            audio = [t for t in audio if not t.mute and (solo is None or t.id in solo)]
         results = {}
         heavy = [t for t in audio if self.nodes[t.id].chain.order]
         if self.live and len(heavy) >= 2 and self.pool_size > 1:
@@ -665,7 +669,11 @@ class Engine:
     def meters_at(self, pos: int) -> dict:
         """The peaks of every node in the block that holds the heard frame `pos` (live)."""
         best = None
-        for p, n, pk in list(self.meters):
+        try:
+            items = list(self.meters)
+        except RuntimeError:                          # appended to by the reader right now
+            return {}
+        for p, n, pk in items:
             if p <= pos < p + n:
                 return pk
             if p <= pos:

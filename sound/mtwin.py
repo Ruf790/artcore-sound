@@ -10,7 +10,7 @@ import time
 from dataclasses import replace
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QColorDialog, QFileDialog, QInputDialog, QLineEdit, QMenu, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QLineEdit, QMenu, QMessageBox
 
 from . import APP_TITLE, AUDIO_EXT, VIDEO_EXT, config, style
 from .doc import Document, fmt_time
@@ -1196,7 +1196,9 @@ class MultitrackCommands:
         end = max(p.frames, start) + int(3600 * p.rate) if not loop else punch[1]
         eng = self.mt_engine(p)
         eng.extra_input = None
+        eng.extend = end
         if not self.player.play(eng, start, end, loop):
+            eng.extend = 0
             QMessageBox.warning(self, APP_TITLE, t("playback_err", self.player.error))
             return
         if loop:
@@ -1221,6 +1223,9 @@ class MultitrackCommands:
             return
         p = info["project"]
         self.player.stop()
+        eng = self.mt_engine(p)
+        if eng is not None:
+            eng.extend = 0
         r = self.mt_rec
         results = r.stop() if r is not None else []
         self.mt_view.timeline.rec_preview = {}

@@ -8,9 +8,12 @@ recovery offer, the error window and the long-film report (ARTCORE_STRESS_REPORT
 film tools, and the restoration — its menu, its effect windows (the hum found, the clipping found and marked), the
 spectral editing window beside a selection drawn on the spectrogram. Test sound is made by ffmpeg.
 
-Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick | --restore | --block3]   (--quick: the main window and
-1.0's windows only — QT_SCALE_FACTOR=1.5 with it is the 150 % check; --restore: the main window and the restoration
-only; --block3: the main window, VST3 and macros only)"""
+(3.0) the multitrack: a project with tracks, a bus, sends, effects, envelopes and regions while it plays, the
+mixdown, a track's effect chain and the new-project window.
+
+Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick | --restore | --block3 | --mt]   (--quick: the main window,
+1.0's windows and the multitrack only — QT_SCALE_FACTOR=1.5 with it is the 150 % check; --restore: the main window
+and the restoration only; --block3: the main window, VST3 and macros only; --mt: the main window and the multitrack)"""
 import os
 import subprocess
 import sys
@@ -24,6 +27,7 @@ os.environ.setdefault("ARTCORE_AUDIO", "null")
 TMP = tempfile.mkdtemp(prefix="artcore_sound_shots_")
 RESTORE = "--restore" in sys.argv
 BLOCK3 = "--block3" in sys.argv                  # 2.0 block 3: VST3 and macros only
+MT = "--mt" in sys.argv                          # 3.0: the multitrack only
 os.environ.setdefault("ARTCORE_SOUND_DATA", os.path.join(TMP, "data"))
 
 SONG = ("aevalsrc='0.55*sin(2*PI*110*t)*exp(-mod(t,0.5)*5)+0.25*sin(2*PI*440*t+3*sin(2*PI*2*t))*(0.6+0.4*sin(2*PI*0.15*t))"
@@ -93,6 +97,13 @@ def main(out: str, lang: str = "ru") -> int:
             pump(0.1)
         w.grab().save(os.path.join(out, f"main_{theme}.png"))
         w.stop_play()
+        if MT:
+            for x in w.docs:
+                x.mark_saved()
+            shoot_30(w, out, theme, pump, lang)
+            w.close()
+            s.close()
+            continue
         if BLOCK3:
             for x in w.docs:
                 x.mark_saved()
@@ -115,6 +126,7 @@ def main(out: str, lang: str = "ru") -> int:
             for x in w.docs:
                 x.mark_saved()
             shoot_10(w, out, theme, pump, lang)
+            shoot_30(w, out, theme, pump, lang)
             w.close()
             s.close()
             continue
@@ -154,6 +166,7 @@ def main(out: str, lang: str = "ru") -> int:
         shoot_10(w, out, theme, pump, lang)
         shoot_20(w, out, theme, pump, lang)
         shoot_block3(w, out, theme, pump, lang)
+        shoot_30(w, out, theme, pump, lang)
         for x in w.docs:
             x.mark_saved()
         w.close()
@@ -666,6 +679,75 @@ def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:
         pump(0.3)
         tb.grab().save(os.path.join(out, f"stress_report_{theme}.png"))
         tb.close()
+
+
+def shoot_30(w, out: str, theme: str, pump, lang: str) -> None:
+    """3.0: a project of five tracks and a bus while it plays (the mixer under the timeline), the mixdown, an effect
+    chain, a new project."""
+    from sound.mt import projfile
+    from sound.mt.model import Project, Slot
+    from sound.mt.ui.dialogs import ChainDialog, MixdownDialog, NewProjectDialog
+    ru = lang == "ru"
+    folder = os.path.join(TMP, f"proj_{theme}")
+    os.makedirs(folder, exist_ok=True)
+    files = []
+    for name, src in (("drums", "aevalsrc='0.8*sin(2*PI*60*t)*exp(-mod(t,0.5)*14)+0.3*(random(0)-0.5)*exp(-mod(t+0.25,0.5)*30)"
+                               "':s=48000:d=40"),
+                      ("bass", "aevalsrc='0.5*sin(2*PI*(55+27.5*lt(mod(t,4),2))*t)*(0.7+0.3*sin(2*PI*2*t))':s=48000:d=40"),
+                      ("guitar", "aevalsrc='0.35*sin(2*PI*330*t+2*sin(2*PI*3*t))*exp(-mod(t,1)*2)|0.35*sin(2*PI*392*t)*"
+                                 "exp(-mod(t+0.5,1)*2)':s=48000:d=40"),
+                      ("vocal", "aevalsrc='0.45*sin(2*PI*(220+30*sin(2*PI*0.5*t))*t)*(0.5+0.5*sin(2*PI*0.25*t))*"
+                                "gt(mod(t,8),1)':s=48000:d=40")):
+        path = os.path.join(folder, name + ".wav")
+        if not os.path.isfile(path):
+            ff("-f", "lavfi", "-i", src, "-c:a", "pcm_s24le", path)
+        files.append(path)
+    p = Project(48000, 2, "Demo" if not ru else "Демо", os.path.join(folder, "Demo.acproj"), folder)
+    projfile.save(p)
+    w.add_project(p)
+    w.mt_insert(files, None, 0)
+    t0 = time.time()
+    while (w.job is not None or sum(len(x.clips) for x in p.tracks) < 4) and time.time() - t0 < 30:
+        pump(0.1)
+    tr = p.tracks
+    names = (("Барабаны", "Бас", "Гитара", "Голос") if ru else ("Drums", "Bass", "Guitar", "Vocal"))
+    for x, nm in zip(tr, names):
+        p.set_track(x.id, name=nm)
+    p.split_clips(int(16 * 48000), {tr[2].clips[0].id})
+    p.move_clips({tr[2].clips[-1].id}, int(3 * 48000))
+    p.trim_clip(tr[3].clips[0].id, "left", int(2 * 48000))
+    p.set_clip(tr[3].clips[0].id, fade_in=int(1.5 * 48000), fade_out=int(3 * 48000), curve_out="scurve")
+    bus = p.add_track("Reverb" if not ru else "Реверб", "bus")
+    p.set_fx(bus.id, [Slot("reverb", {})])
+    p.set_send(tr[2].id, bus.id, db=-9)
+    p.set_send(tr[3].id, bus.id, db=-6)
+    p.set_fx(tr[3].id, [Slot("eq", {}), Slot("comp", {})])
+    p.set_fx(tr[1].id, [Slot("comp", {})])
+    p.set_track(tr[1].id, gain_db=-3.5, pan=-0.2)
+    p.set_track(tr[2].id, pan=0.45, solo=False)
+    p.set_envelope(tr[3].id, "vol", [(0, -4.0), (int(12 * 48000), 0.0), (int(22 * 48000), -9.0), (int(30 * 48000), 0.0)])
+    p.ui["env"] = [tr[3].id]
+    p.add_region(int(8 * 48000), int(24 * 48000), "Куплет" if ru else "Verse")
+    p.add_region(int(24 * 48000), int(36 * 48000), "Припев" if ru else "Chorus")
+    p.add_marker(int(4 * 48000), "Intro")
+    p.ui["current"] = tr[3].id
+    p.sel_clips = frozenset({tr[2].clips[-1].id})
+    w.mt_edited(p)
+    w.mt_view.timeline.zoom_all()
+    p.cursor = int(9 * 48000)
+    w.mt_play()
+    pump(1.5)
+    w.grab().save(os.path.join(out, f"multitrack_{theme}.png"))
+    w.stop_play()
+    p.sel = (int(8 * 48000), int(24 * 48000))
+    for name, dlg in (("mt_mixdown", MixdownDialog(p, w.cfg, w)), ("mt_chain", ChainDialog(w, p, tr[3].id)),
+                      ("mt_new", NewProjectDialog(w.cfg, w))):
+        dlg.show()
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"{name}_{theme}.png"))
+        dlg.close()
+    p.mark_saved()
+    w.close_doc(w.items.index(p))
 
 
 QUICK = "--quick" in sys.argv                    # the empty and main windows and 1.0's only (the 150 % check)

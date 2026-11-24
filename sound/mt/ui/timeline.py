@@ -384,8 +384,6 @@ class Timeline(QWidget):
                                     curve_gain(c.curve_out, (c.length - rel) / c.fade_out), 1.0)
                 lo = np.clip(np.nan_to_num(cols[:, 0]) * g * env, -1, 1)
                 hi = np.clip(np.nan_to_num(cols[:, 1]) * g * env, -1, 1)
-                mid = wave.center().y()
-                half = wave.height() / 2 - 1
                 img = QImage(ncols, max(1, int(wave.height())), QImage.Format_ARGB32_Premultiplied)
                 img.fill(0)
                 ip = QPainter(img)
@@ -399,7 +397,6 @@ class Timeline(QWidget):
                     ip.drawLine(QPointF(i + 0.5, y1), QPointF(i + 0.5, max(y2, y1 + 1)))
                 ip.end()
                 p.drawImage(QPointF(vis_a, wave.top()), img)
-                del mid, half
         # fades
         p.setRenderHint(QPainter.Antialiasing, True)
         shade = QColor(0, 0, 0, 90 if style.IS_DARK else 50)

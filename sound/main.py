@@ -57,7 +57,9 @@ def selftest() -> int:
     no input device). 1.0: a batch of 3 files in worker processes of the exe, a long Cyrillic path, the crash
     journal, the error report. 2.0: the listening volume (−12 dB heard, the meters unchanged, the file untouched); the film tools (return to
     video with E-AC-3 / DTS, the automatic sync, Pro Logic II, libmpv); restoration; VST3 through the exe's own plugin
-    host (pedalboard)."""
+    host (pedalboard). 3.0: the multitrack — media read in place and decoded into the cache, the mix checked against
+    numpy, plug-in delay compensation in one host per track, .acproj and the journal, a mixdown through ffmpeg, the
+    project tab playing and recording through the null devices."""
     import tempfile
     import time
     import traceback
@@ -204,6 +206,7 @@ def selftest() -> int:
         win.close()
         _selftest_10(src, session, tmp, lines)
         _selftest_20(src, session, tmp, lines)
+        _selftest_30(session, tmp, lines)
         session.close()
         with open(out, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -664,6 +667,132 @@ def _selftest_film(session, tmp: str, lines: list) -> None:
             raise RuntimeError("libmpv did not seek")
     finally:
         p.terminate()
+
+
+def _selftest_30(session, tmp: str, lines: list) -> None:
+    """3.0: the multitrack (see selftest)."""
+    import json
+    import time
+
+    import numpy as np
+
+    from . import ff
+    from .mt import engine, projfile, render
+    from .mt import media as M
+    from .mt.model import Project, Slot
+    rate = 48000
+    folder = os.path.join(tmp, "Проект 3.0")
+    os.makedirs(folder, exist_ok=True)
+    cache = os.path.join(tmp, "mtcache")
+    os.makedirs(cache, exist_ok=True)
+    t = np.arange(3 * rate) / rate
+    x = np.stack((0.4 * np.sin(2 * np.pi * 440 * t), 0.3 * np.sin(2 * np.pi * 660 * t)), 1).astype(np.float32)
+    w = M.WavWriter(os.path.join(folder, "tone.wav"), 2, rate, os.path.join(cache, "st.pk"))
+    w.append(x)
+    w.finish()
+    mp3 = os.path.join(folder, "voice.mp3")
+    exe = ff.ffmpeg()
+    import subprocess
+    subprocess.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=330:d=3:r=44100", "-c:a", "libmp3lame",
+                    "-b:a", "192k", mp3], check=True, creationflags=0x08000000 if sys.platform == "win32" else 0)
+    p = Project(rate, 2, "Self", os.path.join(folder, "Self.acproj"), folder)
+    m1 = M.load(M.Media(M.new_media_id(), os.path.join(folder, "tone.wav")), rate, cache)
+    m2 = M.load(M.Media(M.new_media_id(), mp3), rate, cache)
+    if m1.offline or m2.offline or m1.cached or not m2.cached:
+        raise RuntimeError(f"the media: {m1.error} {m2.error}")
+    if not np.array_equal(m1.src.read(0, m1.frames), x):
+        raise RuntimeError("a WAV read in place")
+    lines.append(f"multitrack media: WAV in place {m1.frames} frames; MP3 44.1 kHz → cache {m2.frames} frames at 48 kHz")
+    p.media[m1.id], p.media[m2.id] = m1, m2
+    a, b = p.add_track("A"), p.add_track("B", channels=1)
+    p.add_clip(a.id, m1.id, 1000, 100000)
+    p.add_clip(b.id, m2.id, 50000, 80000)
+    p.set_track(b.id, mute=True)
+    out = []
+    engine.render(p, 0, p.frames, out.append)
+    y = np.concatenate(out)
+    want = np.zeros((p.frames, 2), np.float32)
+    want[1000:101000] = x[:100000]
+    if not np.array_equal(y, want):
+        raise RuntimeError("the mix against numpy")
+    p.set_track(b.id, mute=False)
+    bus = p.add_track("Bus", "bus")
+    p.set_fx(bus.id, [Slot("reverb", {})])
+    p.set_send(a.id, bus.id, db=-6)
+    p.set_envelope(a.id, "vol", [(0, 0.0), (rate, -12.0)])
+    plug = os.environ.get("ARTCORE_TESTPLUG", "")
+    if plug and os.path.exists(plug):
+        p.set_fx(b.id, [Slot("vst3", {"plugin": {"path": plug, "name": "ArtCore Test Plug Latency", "id": "",
+                                                 "maker": ""}}),
+                        Slot("vst3", {"plugin": {"path": plug, "name": "ArtCore Test Plug", "id": "", "maker": ""}})])
+        eng = engine.Engine(p, live=False)
+        try:
+            eng.seek(0)
+            procs = [v[2] for v in eng.nodes[b.id].chain.procs.values()]
+            if len(procs) != 2 or procs[0].host.h is not procs[1].host.h or eng.latency < 1000:
+                raise RuntimeError(f"the VST3 chain: {eng.errors}")
+            lines.append(f"multitrack VST3: 2 plug-ins in one host, latency {eng.latency} made up for")
+        finally:
+            eng.close()
+    else:
+        lines.append("multitrack VST3: no test plugin — not checked")
+    t0 = time.monotonic()
+    mix = os.path.join(folder, "Сведение.flac")
+    render.mixdown(p, mix, "flac", "24", tail=True)
+    info = ff.probe(mix)
+    lines.append(f"multitrack mixdown: FLAC {info.duration:.2f} s (project {p.frames / rate:.2f} s + tail), "
+                 f"{time.monotonic() - t0:.2f} s")
+    if info.duration < p.frames / rate - 0.01:
+        raise RuntimeError("the mixdown")
+    projfile.save(p)
+    q = projfile.load(p.path)
+    projfile.load_media(q, cache)
+    if q.tracks != p.tracks:
+        raise RuntimeError("the .acproj")
+    p.journal_folder = session.folder()
+    p.set_track(a.id, gain_db=-3)
+    projfile.write_journal(p)
+    r = projfile.from_journal(json.load(open(os.path.join(p.journal_folder, projfile.JOURNAL), encoding="utf-8")))
+    if len(r.history) != len(p.history) or r.tracks != p.tracks:
+        raise RuntimeError("the project journal")
+    lines.append(f"multitrack project: saved, opened, journal of {len(r.history)} steps restored")
+    for m in list(q.media.values()) + list(r.media.values()):
+        m.close()
+    from PySide6.QtWidgets import QApplication
+    from . import config
+    from .window import MainWindow
+    app = QApplication.instance()
+    cfg = config.load()
+    cfg.update(check_updates=False, geometry="")
+    win = MainWindow(cfg, session)
+    win.show()
+    win.add_project(p)
+    p.cursor = 0
+    win.mt_play()
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 0.6:
+        app.processEvents()
+        time.sleep(0.01)
+    pos = win.player.position()
+    win.stop_play()
+    if pos < rate // 4:
+        raise RuntimeError("the project did not play")
+    p.ui["armed"] = [a.id]
+    win._mt_inputs(p)
+    p.cursor = 0
+    win.mt_record_start()
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 0.6:
+        app.processEvents()
+        time.sleep(0.01)
+    win.mt_record_stop()
+    rec = [c for c in p.track(a.id).clips if p.media[c.media].path.endswith(".wav") and "A " in
+           os.path.basename(p.media[c.media].path)]
+    if not rec:
+        raise RuntimeError("the recording onto a track")
+    lines.append(f"multitrack window: played to {pos}, recorded {rec[0].length} frames at {rec[0].start}")
+    p.mark_saved()
+    win.close()
 
 
 def _selftest_restore(session, tmp: str, lines: list) -> None:
