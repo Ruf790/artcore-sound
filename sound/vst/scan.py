@@ -60,6 +60,7 @@ class PluginInfo:
 class Failed:
     path: str
     reason: str                     # "crashed" | "hung" | the error's text
+    detail: str = ""                # what the process said before it died
 
 
 def find_files(dirs: list[str]) -> list[str]:
@@ -133,11 +134,11 @@ def scan_one(path: str, timeout: float = T_SCAN) -> dict:
     from .client import start_process
     try:
         p = start_process(["--vst-scan", path], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL)
+                          stderr=subprocess.PIPE)
     except OSError as e:
         return {"failed": str(e)}
     try:
-        out, _err = p.communicate(timeout=timeout)
+        out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         p.kill()
         p.communicate()
@@ -148,7 +149,8 @@ def scan_one(path: str, timeout: float = T_SCAN) -> dict:
     except ValueError:
         res = None
     if res is None:
-        return {"failed": "crashed"}
+        tail = (err or b"").decode("utf-8", "replace").strip().splitlines()[-3:]
+        return {"failed": "crashed", "detail": f"exit {p.returncode}: " + " | ".join(tail)}
     if res.get("error"):
         return {"failed": res["error"]}
     return {"plugins": res.get("plugins", [])}
@@ -185,7 +187,7 @@ class Library:
             if not _inside(path, dirs):
                 continue
             if ent.get("failed"):
-                out.append(Failed(path, ent["failed"]))
+                out.append(Failed(path, ent["failed"], ent.get("detail", "")))
             for p in ent.get("plugins", []):
                 if p.get("error"):
                     out.append(Failed(path + " — " + p.get("name", ""), p["error"]))

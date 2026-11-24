@@ -509,6 +509,8 @@ def _selftest_vst3(session, tmp: str, lines: list) -> None:
     n, bad = lib.scan(force=True)
     names = sorted(p.name for p in lib.plugins())
     lines.append(f"VST3 scan: {n} plugins, {bad} not loaded: {names}")
+    for f in lib.failed():
+        lines.append(f"  not loaded: {f.path}: {f.reason} {f.detail}")
     if n != 2 or bad:
         raise RuntimeError("the VST3 scan")
     p = next(p for p in lib.plugins() if p.name == "ArtCore Test Plug Latency")

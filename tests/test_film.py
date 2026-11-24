@@ -281,7 +281,7 @@ def test_stereo_track_added(films, session, kind, tmp_path):
         assert lvl(sl, 0) > 30 * lvl(sl, 1) and lvl(sr, 1) > 30 * lvl(sr, 0)
     else:                                                             # Lt/Rt: both surrounds in both sides
         assert lvl(sl, 1) > 0.3 * lvl(sl, 0) and lvl(sr, 0) > 0.3 * lvl(sr, 1)
-    assert abs(st.frames - d.frames) < 0.02 * d.rate
+    assert abs(st.frames - d.frames) < 0.04 * d.rate                  # an AAC frame (1024) of padding is fine
     # the downmix lines up with the picture: the front left tone starts where it does in the 5.1 track
     m = media.open_file(out, session.folder(), 0).read(0, 4800)[:, 0]
     s0 = x[:4800, 0]

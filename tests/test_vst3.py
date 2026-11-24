@@ -387,3 +387,16 @@ def test_settings_page(qapp, data_dir, tmp_path, plug):
     pg.apply()
     assert cfg["vst3_folders"] == []
     scan._lib = None
+
+
+def test_macro_with_a_plugin(plug, session):
+    """A VST3 step in a macro, over the selection the macro made."""
+    from sound import macro
+    x = _noise(2 * RATE, 2)
+    d = _doc(session, x)
+    macro.run(d, [macro.Step("select", {"a": 1.0, "a_from": "end", "b": 0.0, "b_from": "end"}),
+                  macro.Step("vst3", {"plugin": _ref(plug, LATE), "params": {"gain_db": GAIN_6DB}})])
+    y = d.read(0, d.frames)
+    assert d.frames == 2 * RATE
+    assert np.array_equal(y[:RATE], x[:RATE])
+    assert np.allclose(y[RATE:], x[RATE:] * 10 ** (6 / 20), atol=1e-6)

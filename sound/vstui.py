@@ -98,7 +98,13 @@ class VstBody(QWidget):
         self.area = QScrollArea()
         self.area.setWidgetResizable(True)
         self.area.setMinimumHeight(260)
+        self.area.setObjectName("vstParams")
+        self.area.setStyleSheet(f"QScrollArea#vstParams {{ background: {style.PANEL}; border: 1px solid "
+                                f"{style.BORDER}; border-radius: 8px; }}")
+        self.area.viewport().setAutoFillBackground(False)
         self.grid_w = QWidget()
+        self.grid_w.setObjectName("vstGrid")
+        self.grid_w.setStyleSheet("QWidget#vstGrid { background: transparent; }")
         self.grid = QGridLayout(self.grid_w)
         self.grid.setHorizontalSpacing(10)
         self.grid.setVerticalSpacing(4)
@@ -490,6 +496,8 @@ class Vst3Page(QWidget):
         self.list.setRootIsDecorated(False)
         self.list.setMinimumHeight(200)
         self.list.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        for c in (1, 2, 3):
+            self.list.header().setSectionResizeMode(c, QHeaderView.ResizeToContents)
         v.addWidget(self.list, 1)
         v.addWidget(QLabel(t("vst_failed")))
         row = QHBoxLayout()
@@ -542,11 +550,13 @@ class Vst3Page(QWidget):
             self.list.addTopLevelItem(it)
         self.failed.clear()
         for f in lib.failed():
-            reason = {"crashed": t("vst_r_crashed"), "hung": t("vst_r_hung")}.get(f.reason, f.reason)
+            reason = {"crashed": t("vst_r_crashed"), "hung": t("vst_r_hung")}.get(f.reason) or \
+                (t("vst_r_bad") if "unsupported plugin format" in f.reason or "Unable to scan" in f.reason
+                 else f.reason)
             it_text = f"{os.path.basename(f.path)} — {reason}"
             self.failed.addItem(it_text)
             self.failed.item(self.failed.count() - 1).setData(Qt.UserRole, f.path.split(" — ")[0])
-            self.failed.item(self.failed.count() - 1).setToolTip(f.path)
+            self.failed.item(self.failed.count() - 1).setToolTip(f"{f.path}\n{f.reason} {f.detail}".strip())
         self.b_retry.setEnabled(self.failed.count() > 0 and not self.running)
         if not self.running:
             self.state.setText(t("vst_found", len(plugins), self.failed.count()))

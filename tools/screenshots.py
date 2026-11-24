@@ -8,8 +8,9 @@ recovery offer, the error window and the long-film report (ARTCORE_STRESS_REPORT
 film tools, and the restoration — its menu, its effect windows (the hum found, the clipping found and marked), the
 spectral editing window beside a selection drawn on the spectrogram. Test sound is made by ffmpeg.
 
-Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick | --restore]   (--quick: the main window and 1.0's
-windows only — QT_SCALE_FACTOR=1.5 with it is the 150 % check; --restore: the main window and the restoration only)"""
+Usage: python tools/screenshots.py OUT_DIR [ru|en] [--quick | --restore | --block3]   (--quick: the main window and
+1.0's windows only — QT_SCALE_FACTOR=1.5 with it is the 150 % check; --restore: the main window and the restoration
+only; --block3: the main window, VST3 and macros only)"""
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("ARTCORE_AUDIO", "null")
 TMP = tempfile.mkdtemp(prefix="artcore_sound_shots_")
 RESTORE = "--restore" in sys.argv
+BLOCK3 = "--block3" in sys.argv                  # 2.0 block 3: VST3 and macros only
 os.environ.setdefault("ARTCORE_SOUND_DATA", os.path.join(TMP, "data"))
 
 SONG = ("aevalsrc='0.55*sin(2*PI*110*t)*exp(-mod(t,0.5)*5)+0.25*sin(2*PI*440*t+3*sin(2*PI*2*t))*(0.6+0.4*sin(2*PI*0.15*t))"
@@ -91,6 +93,15 @@ def main(out: str, lang: str = "ru") -> int:
             pump(0.1)
         w.grab().save(os.path.join(out, f"main_{theme}.png"))
         w.stop_play()
+        if BLOCK3:
+            for x in w.docs:
+                x.mark_saved()
+            shoot_block3(w, out, theme, pump, lang)
+            for x in w.docs:
+                x.mark_saved()
+            w.close()
+            s.close()
+            continue
         if RESTORE:
             for x in w.docs:
                 x.mark_saved()
@@ -142,6 +153,7 @@ def main(out: str, lang: str = "ru") -> int:
             shoot_04(w, out, theme, pump, lang)
         shoot_10(w, out, theme, pump, lang)
         shoot_20(w, out, theme, pump, lang)
+        shoot_block3(w, out, theme, pump, lang)
         for x in w.docs:
             x.mark_saved()
         w.close()
@@ -408,6 +420,123 @@ def shoot_restore(w, out: str, theme: str, pump, lang: str) -> None:
     panel.close()
     w.set_view_mode("wave")
     d.mark_saved()
+
+
+def _testplug() -> str:
+    for p in (os.environ.get("ARTCORE_TESTPLUG", ""),
+              os.path.join(ROOT, "build", "testplug", "VST3", "Release", "ArtCoreTestPlug.vst3")):
+        if p and os.path.exists(p):
+            return p
+    return ""
+
+
+def shoot_block3(w, out: str, theme: str, pump, lang: str) -> None:
+    """2.0 block 3: Settings → VST3 (the plugins found, one that did not load); the Effects menu with the plugins;
+    a plugin's window with its parameters; the Macros menu, the recording in the status bar, a macro's window with
+    its steps, the list of macros."""
+    import shutil
+    from sound import fxui, macro, macroui, vstui
+    from sound.dialogs import SettingsDialog
+    from sound.vst import scan
+    plug = _testplug()
+    folder = os.path.join(TMP, "vst3")
+    if plug and not os.path.exists(folder):
+        os.makedirs(folder)
+        shutil.copytree(plug, os.path.join(folder, os.path.basename(plug)))
+        with open(os.path.join(folder, "Broken.vst3"), "wb") as f:
+            f.write(b"not a plugin")
+    if plug:
+        w.cfg["vst3_folders"] = [folder]
+        scan._lib = None
+        sd = SettingsDialog(w.cfg, w, page="vst3")
+        sd.resize(760, 640)
+        sd.show()
+        sd.vst.start_scan(False)
+        sd.vst.wait()
+        pump(0.3)
+        sd.grab().save(os.path.join(out, f"settings_vst3_{theme}.png"))
+        sd.reject()
+        w._fill_vst_menu()
+        fxm = next(a.menu() for a in w.menuBar().actions() if a.menu() is not None and
+                   a.text() in ("Эффекты", "Effects"))
+        fxm.popup(w.mapToGlobal(w.rect().topLeft()))
+        pump(0.2)
+        sub = w.vst_menu
+        sub.popup(fxm.mapToGlobal(fxm.rect().topRight()))
+        pump(0.3)
+        fxm.grab().save(os.path.join(out, f"vst_menu_{theme}.png"))
+        pl = next(a.menu() for a in sub.actions() if a.menu() is not None)        # the maker's submenu
+        pl.popup(sub.mapToGlobal(sub.rect().topRight()))
+        pump(0.3)
+        sub.grab().save(os.path.join(out, f"vst_submenu_{theme}.png"))
+        pl.grab().save(os.path.join(out, f"vst_plugins_{theme}.png"))
+        pl.hide()
+        sub.hide()
+        fxm.hide()
+        p = next(x for x in scan.library(w.cfg).plugins() if x.name == "ArtCore Test Plug Latency")
+        d = w.doc
+        dlg = fxui.EffectDialog(w, "vst3", d, 0, d.frames, True, plugin=p.ref())
+        dlg.show()
+        dlg.vst.wait_loaded()
+        s_, _lab = dlg.vst.ctrls["gain_db"]
+        s_.setValue(round(27 / 48 * s_.maximum()))
+        dlg.b_preview.setChecked(True)
+        pump(1.0)
+        dlg.resize(780, 620)
+        pump(0.3)
+        dlg.grab().save(os.path.join(out, f"fx_vst3_{theme}.png"))
+        dlg.reject()
+        pump(0.2)
+    names = ("Подготовка подкаста", "Срезать 2 с в начале") if lang == "ru" else ("Podcast prep", "Cut 2 s at the start")
+    for m in macro.load_all():
+        macro.delete(m)
+    m1 = macro.Macro(names[0], [macro.Step("dc"), macro.Step("nr_auto"),
+                                macro.Step("select", {"a": 0.0, "a_from": "start", "b": 0.5, "b_from": "start"}),
+                                macro.Step("fade_in", {"curve": "scurve"}), macro.Step("select_none"),
+                                macro.Step("normalize", {"mode": "loudness", "target": -16.0, "ceiling": -1.0}),
+                                macro.Step("save", {"format": "mp3", "template": "{name}-podcast"})], "Ctrl+Alt+1")
+    m2 = macro.Macro(names[1], [macro.Step("select", {"a": 0.0, "a_from": "start", "b": 2.0, "b_from": "start"}),
+                                macro.Step("delete")], "Ctrl+Alt+2")
+    macro.save(m1)
+    macro.save(m2)
+    w.fill_macros()
+    w.macro_record_toggle()
+    d = w.doc
+    d.sel = (int(2 * d.rate), int(5 * d.rate))
+    w._on_selection()
+    w.delete()
+    w.simple_op("gain", db=-3.0)
+    t0 = time.time()
+    while w.job is not None and time.time() - t0 < 20:
+        pump(0.05)
+    pump(0.3)
+    mm = w.macro_menu
+    mm.popup(w.mapToGlobal(w.rect().topLeft()))
+    pump(0.3)
+    mm.grab().save(os.path.join(out, f"macro_menu_{theme}.png"))
+    mm.hide()
+    w.grab().save(os.path.join(out, f"macro_recording_{theme}.png"))
+    w.mrec = None
+    w.a_mrec.setChecked(False)
+    w.a_mrec.setText(w.a_mrec.text())
+    w._macro_status()
+    w.undo()
+    w.undo()
+    dlg = macroui.MacroDialog(w, macro.find(names[0]))
+    dlg.resize(700, 560)
+    dlg.show()
+    pump(0.3)
+    dlg.grab().save(os.path.join(out, f"macro_dialog_{theme}.png"))
+    dlg.reject()
+    mg = macroui.MacroManager(w)
+    mg.resize(620, 440)
+    mg.show()
+    pump(0.3)
+    mg.grab().save(os.path.join(out, f"macro_manager_{theme}.png"))
+    mg.reject()
+    for m in macro.load_all():
+        macro.delete(m)
+    w.fill_macros()
 
 
 def shoot_10(w, out: str, theme: str, pump, lang: str) -> None:

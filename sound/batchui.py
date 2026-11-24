@@ -23,7 +23,7 @@ STEP_ICONS = {"gain": "fa6s.volume-high", "normalize": "fa6s.chart-simple", "dc"
               "reverb": "fa6s.church", "tempo": "fa6s.gauge-high", "nr": "fa6s.wand-magic-sparkles",
               "declick": "fa6s.bolt", "chmatrix": "fa6s.table-cells", "dialog": "fa6s.comment",
               "nr_auto": "fa6s.wand-magic", "decrackle": "fa6s.record-vinyl", "declip": "fa6s.scissors",
-              "dehum": "fa6s.plug-circle-xmark", "deess": "fa6s.wind", "vst3": "fa6s.plug"}
+              "dehum": "fa6s.plug-circle-xmark", "deess": "fa6s.wind", "vst3": "fa6s.plug", "macro": "fa6s.list-check"}
 STATUS_COLORS = {"ok": "#3fb27f", "error": "#e5534b", "skip": "#c69026", "cancel": "#8b949e", "run": "#4c9aff"}
 COLS = ("n", "file", "status", "progress", "lufs", "peak", "time", "note")
 
@@ -408,6 +408,9 @@ class BatchWindow(QDialog):
         menu.addSection(t("vst_menu"))                   # 2.0: the plugins found, filled when it opens
         self.vst_menu = menu.addMenu(style.icon("fa6s.plug"), t("vst_menu"))
         self.vst_menu.aboutToShow.connect(self._fill_vst_menu)
+        menu.addSection(t("m_macros"))                   # 2.0: the saved macros
+        self.macro_menu = menu.addMenu(style.icon("fa6s.list-check"), t("m_macros"))
+        self.macro_menu.aboutToShow.connect(self._fill_macro_menu)
         self.b_add.setMenu(menu)
         col.addWidget(self.b_add)
         self.b_edit = QPushButton(style.icon("fa6s.pen"), t("bt_edit_step") + "…")
@@ -463,6 +466,21 @@ class BatchWindow(QDialog):
         for p in plugins:
             m.addAction(f"{p.name}  ({p.maker})" if p.maker else p.name, lambda p=p: self.add_vst_step(p))
 
+    def _fill_macro_menu(self) -> None:
+        from . import macro
+        m = self.macro_menu
+        m.clear()
+        macros = macro.load_all()
+        if not macros:
+            a = m.addAction(t("mc_none"))
+            a.setEnabled(False)
+        for mc in macros:
+            m.addAction(mc.name, lambda mc=mc: self.add_macro_step(mc))
+
+    def add_macro_step(self, mc) -> None:
+        """The macro's steps as they are now go into the batch (a later change of the macro does not)."""
+        self._add_step("macro", {"name": mc.name, "steps": [s.to_dict() for s in mc.steps]})
+
     def add_vst_step(self, plugin) -> None:
         self._add_step("vst3", {"plugin": plugin.ref()})
 
@@ -489,7 +507,16 @@ class BatchWindow(QDialog):
         if it is None or self._running():
             return
         s: batch.Step = it.data(Qt.UserRole)
-        if s.kind in batch.FX_STEPS:
+        if s.kind == "macro":                            # 2.0: the batch's own copy of the macro's steps
+            from . import macro, macroui
+            m = macro.Macro(s.values["name"], [macro.Step.from_dict(x) for x in s.values["steps"]])
+            dlg = macroui.MacroDialog(self.win, m, embedded=True)
+            dlg.setParent(self, dlg.windowFlags())
+            values = None
+            if dlg.exec():
+                r = dlg.result()
+                values = {"name": r.name, "steps": [x.to_dict() for x in r.steps]}
+        elif s.kind in batch.FX_STEPS:
             values = self._edit_fx(s)
         else:
             if not batch.step_params(s.kind):
